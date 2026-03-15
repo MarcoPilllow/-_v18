@@ -9,7 +9,7 @@ import os
 # --- 1. 環境基礎設定 ---
 st.set_page_config(page_title="三大法人籌碼變化", layout="centered")
 
-# CSS 修正：防止主畫面的欄位 (Columns) 在手機版垂直堆疊
+# CSS 修正：極致緊湊的按鈕排版，與完美的上下日期輸入
 st.markdown("""
     <style>
     footer {visibility: hidden;}
@@ -29,17 +29,23 @@ st.markdown("""
     /* Toggle 置中 */
     div[role="radiogroup"] { justify-content: center; margin-bottom: 1rem; }
     
-    /* 【關鍵排版修復】強制讓橫向區塊在手機版保持並排，不變成垂直瀑布流 */
+    /* 【關鍵排版修復】極致壓縮手機版的橫向間距 */
     @media (max-width: 768px) {
         div[data-testid="stHorizontalBlock"] {
             flex-direction: row !important;
             flex-wrap: nowrap !important;
+            gap: 0.3rem !important; /* 縮小按鈕列之間的空隙 */
         }
         div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
             width: auto !important;
             flex: 1 1 0% !important;
             min-width: 0 !important;
-            padding: 0 0.2rem !important; /* 微調按鈕間距 */
+            padding: 0 !important; /* 拔除 Streamlit 預設的多餘內邊距 */
+        }
+        /* 微調手機版按鈕內的文字大小與上下空間 */
+        .stButton button {
+            padding: 0.2rem !important;
+            font-size: 13px !important;
         }
     }
     </style>
@@ -149,7 +155,7 @@ with st.expander("💾 儲存 / 刪除目前清單"):
 # [區塊 2：查詢區間]
 st.subheader("2. 查詢區間")
 
-# 【完美還原】原本豐富的 4x4 區間選項
+# 4x4 區間選項矩陣
 presets = [
     [("1天", 1), ("2天", 2), ("3天", 3), ("4天", 4)],
     [("1周", 7), ("2周", 14), ("3周", 21), ("1月", 30)],
@@ -168,12 +174,9 @@ for row in presets:
             st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=days-1)
             st.session_state.label = label
 
-# 日期輸入框現在也會在手機版乖乖並排了
-c_start, c_end = st.columns(2)
-with c_start:
-    start_date = st.date_input("開始日期", st.session_state.start_date)
-with c_end:
-    end_date = st.date_input("結束日期", datetime.date.today())
+# 【改回上下排列】移除 columns，直接宣告兩個 date_input，手機上就會乖乖上下疊起來
+start_date = st.date_input("開始日期", st.session_state.start_date)
+end_date = st.date_input("結束日期", datetime.date.today())
 
 # [區塊 3：執行按鈕]
 run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
