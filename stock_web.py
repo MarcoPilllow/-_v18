@@ -107,7 +107,6 @@ def fetch_finmind_institutional(stock_id, start_date, end_date):
     except: return None
     return None
 
-# 【全新加入】抓取成交量與融資券餘額 (FinMind)
 @st.cache_data(ttl=3600)
 def fetch_finmind_secondary(stock_id, start_date, end_date):
     sd_str = start_date.strftime("%Y-%m-%d")
@@ -115,23 +114,21 @@ def fetch_finmind_secondary(stock_id, start_date, end_date):
     url = "https://api.finmindtrade.com/api/v4/data"
     
     try:
-        # 1. 抓取成交量
         res_p = requests.get(url, params={"dataset": "TaiwanStockPrice", "data_id": str(stock_id), "start_date": sd_str, "end_date": ed_str}, timeout=10).json()
         df_p = pd.DataFrame(res_p.get('data', []))
         
-        # 2. 抓取融資融券
         res_m = requests.get(url, params={"dataset": "TaiwanStockMarginPurchaseShortSale", "data_id": str(stock_id), "start_date": sd_str, "end_date": ed_str}, timeout=10).json()
         df_m = pd.DataFrame(res_m.get('data', []))
 
         df_merged = pd.DataFrame()
         
         if not df_p.empty:
-            df_p['Volume'] = df_p['Trading_Volume'] / 1000 # 換算成張
+            df_p['Volume'] = df_p['Trading_Volume'] / 1000 
             df_merged = df_p[['date', 'Volume']]
             
         if not df_m.empty:
-            df_m['Margin_Bal'] = df_m['MarginPurchaseTodayBalance'] / 1000 # 融資餘額(張)
-            df_m['Short_Bal'] = df_m['ShortSaleTodayBalance'] / 1000 # 融券餘額(張)
+            df_m['Margin_Bal'] = df_m['MarginPurchaseTodayBalance'] / 1000 
+            df_m['Short_Bal'] = df_m['ShortSaleTodayBalance'] / 1000 
             df_m_sub = df_m[['date', 'Margin_Bal', 'Short_Bal']]
             
             if df_merged.empty:
@@ -143,7 +140,6 @@ def fetch_finmind_secondary(stock_id, start_date, end_date):
             df_merged['date'] = pd.to_datetime(df_merged['date']).dt.strftime('%Y-%m-%d')
             df_merged['id'] = stock_id
             return df_merged
-            
     except: return None
     return None
 
@@ -314,12 +310,10 @@ if run_btn:
             stock_name = get_stock_name(stock)
             summary[stock]['name'] = stock_name
             
-            # 分別抓取兩組資料
             df_inst = fetch_finmind_institutional(stock, start_date, end_date)
             df_sec = fetch_finmind_secondary(stock, start_date, end_date)
             
             if df_inst is not None and not df_inst.empty:
-                # 兩組合併
                 if df_sec is not None and not df_sec.empty:
                     df = pd.merge(df_inst, df_sec, on=['date', 'id'], how='left')
                 else:
@@ -359,7 +353,6 @@ if st.session_state.get('has_run', False):
     info = st.session_state.analysis_info
     st.success(f"✅ 高效分析完成！共涵蓋 {info['days']} 個有效交易日")
     
-    # 建立主副圖的 Radio 切換器
     st.subheader("⚙️ 圖表顯示設定")
     c1, c2 = st.columns(2)
     with c1:
@@ -382,7 +375,6 @@ if st.session_state.get('has_run', False):
         sub_df = full_df[full_df['id'] == stock].sort_values('date')
         if sub_df.empty: continue
         
-        # 啟用雙 Y 軸 (Secondary Y)
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         y_data = sub_df[y_column] / 1000
         
@@ -395,23 +387,26 @@ if st.session_state.get('has_run', False):
             hovertemplate="日期: %{x}<br>張數: %{y:+.0f} 張<extra></extra>"
         ), secondary_y=False)
         
-        # 繪製副圖：附加指標折線圖 (如果使用者有選)
+        # 【修正防呆邏輯】只有確定有資料，才去繪製副圖與更新副圖 Y 軸
         if y_col_sec and y_col_sec in sub_df.columns:
-            # 根據指標種類給予不同的折線顏色
-            sec_color = "#f1c40f" if "融資" in selected_sec_label else "#3498db" if "融券" in selected_sec_label else "#ecf0f1"
-            clean_sec_name = selected_sec_label.split(" ")[1] # 移除 Emoji 以維持圖例乾淨
-            
-            fig.add_trace(go.Scatter(
-                x=sub_df['date'],
-                y=sub_df[y_col_sec],
-                mode='lines+markers',
-                line=dict(color=sec_color, width=2.5),
-                marker=dict(size=6),
-                name=clean_sec_name,
-                hovertemplate="日期: %{x}<br>數值: %{y:,.0f} 張<extra></extra>"
-            ), secondary_y=True)
+            # 檢查該欄位是否全部都是 0 或是 NaN，如果是就代表沒抓到該項資料
+            if not sub_df[y_col_sec].isna().all() and (sub_df[y_col_sec] != 0).any():
+                sec_color = "#f1c40f" if "融資" in selected_sec_label else "#3498db" if "融券" in selected_sec_label else "#ecf0f1"
+                clean_sec_name = selected_sec_label.split(" ")[1]
+                
+                fig.add_trace(go.Scatter(
+                    x=sub_df['date'],
+                    y=sub_df[y_col_sec],
+                    mode='lines+markers',
+                    line=dict(color=sec_color, width=2.5),
+                    marker=dict(size=6),
+                    name=clean_sec_name,
+                    hovertemplate="日期: %{x}<br>數值: %{y:,.0f} 張<extra></extra>"
+                ), secondary_y=True)
+                
+                # 確實有畫出折線圖，才去更新雙 Y 軸標籤
+                fig.update_yaxes(title_text=clean_sec_name, secondary_y=True, showgrid=False)
         
-        # 綜合 Layout 設定
         fig.update_layout(
             title=f"【{summary[stock]['name']}】籌碼與指標診斷",
             template="plotly_dark",
@@ -419,10 +414,7 @@ if st.session_state.get('has_run', False):
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
         
-        # 設定雙 Y 軸的樣式 (隱藏副圖網格線，保持畫面乾淨)
         fig.update_yaxes(title_text="法人張數", secondary_y=False, showgrid=True, gridcolor='#333333')
-        if y_col_sec:
-            fig.update_yaxes(title_text=clean_sec_name, secondary_y=True, showgrid=False)
             
         st.plotly_chart(fig, use_container_width=True)
 
