@@ -22,6 +22,7 @@ st.markdown("""
 
 # --- 2. 數據抓取函數 (置頂防止 NameError) ---
 def fetch_wear_data(stock_id):
+    """從聚財網獲取數據 (加速版)"""
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     urls = {
         'f': f"https://stock.wearn.com/a50m.asp?stockid={stock_id}",
@@ -32,26 +33,30 @@ def fetch_wear_data(stock_id):
     try:
         for key, url in urls.items():
             resp = requests.get(url, headers=headers, timeout=15)
-            resp.encoding = 'big5'
+            resp.encoding = 'big5' 
             dfs = pd.read_html(resp.text)
             target_df = None
             for d in dfs:
                 if '日期' in str(d.columns):
                     target_df = d
                     break
+            
             if target_df is not None:
                 col_idx = 3 if key == 'f' else 2
                 temp = target_df.iloc[:, [0, col_idx]].copy()
                 temp.columns = ['date_raw', key]
+                
                 def conv_d(s):
                     try:
-                        p = s.split('/')
+                        p = str(s).split('/')
                         return datetime.date(int(p[0])+1911, int(p[1]), int(p[2]))
                     except: return None
+                
                 temp['date'] = temp['date_raw'].apply(conv_d)
                 temp = temp.dropna(subset=['date']).drop(columns=['date_raw'])
                 if combined_df is None: combined_df = temp
                 else: combined_df = pd.merge(combined_df, temp, on='date', how='outer')
+        
         if combined_df is not None:
             combined_df = combined_df.fillna(0)
             for col in ['f', 'it', 'd']:
@@ -61,12 +66,16 @@ def fetch_wear_data(stock_id):
     except: return None
     return None
 
-# --- 3. 側邊欄與清單管理 ---
+# --- 3. 狀態初始化 ---
+if 'analysis_results' not in st.session_state:
+    st.session_state.analysis_results = None
+
 if 'custom_lists' not in st.session_state:
     if os.path.exists("stock_lists.json"):
         with open("stock_lists.json", "r", encoding="utf-8") as f: st.session_state.custom_lists = json.load(f)
     else: st.session_state.custom_lists = {"航運三雄": "2603, 2609, 2615"}
 
+# --- 4. 側邊欄 UI ---
 with st.sidebar:
     st.header("📂 股票清單管理")
     list_names = list(st.session_state.custom_lists.keys())
@@ -76,6 +85,7 @@ with st.sidebar:
     stock_input = st.text_input("目前查詢代號", value=stock_val)
 
     st.divider(); st.header("📅 快速區間選擇")
+    # 完美還原 16 格快捷鍵
     presets = [
         [("1天", 1), ("2天", 2), ("3天", 3), ("4天", 4)],
         [("1周", 7), ("2周", 14), ("3周", 21), ("1月", 30)],
@@ -97,7 +107,7 @@ with st.sidebar:
     end_d = st.date_input("結束日期", datetime.date.today())
     run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
 
-# --- 4. 顯示邏輯 ---
+# --- 5. 核心邏輯：執行與顯示 ---
 st.title("📈 台股三大法人籌碼變化")
 
 if run_btn:
@@ -113,28 +123,30 @@ if run_btn:
         prog.progress((i + 1) / len(targets))
     st.session_state.analysis_results = results
     st.session_state.query_info = {"start": start_d, "end": end_d, "label": st.session_state.range_label}
-    st.rerun()
 
-if 'analysis_results' in st.session_state and st.session_state.analysis_results:
+# --- 6. 渲染圖表與 Toggle ---
+if st.session_state.analysis_results:
     res = st.session_state.analysis_results
     info = st.session_state.query_info
     
     st.divider()
-    view_mode = st.radio("📊 選擇顯示數據", ["三大法人總計", "外資", "投信", "自營商"], horizontal=True)
-    mode_map = {"三大法人總計": "tot", "外資": "f", "投信": "it", "自營商": "d"}
+    view_mode = st.radio("📊 選擇顯示維度", ["三大法人總和", "外資", "投信", "自營商"], horizontal=True)
+    mode_map = {"三大法人總和": "tot", "外資": "f", "投信": "it", "自營商": "d"}
     target_col = mode_map[view_mode]
 
     for sid, df in res.items():
         if df.empty: continue
-        fig = go.Figure()
-        # 修正 X 軸：強制轉換為 MM/DD 字符串
+        
+        # X 軸格式淨化：只留 MM/DD (解決顯示不舒服的時間代碼問題)
         df_plot = df.copy().sort_values('date')
         df_plot['date_str'] = df_plot['date'].apply(lambda x: x.strftime('%m/%d'))
         
+        fig = go.Figure()
         fig.add_trace(go.Bar(
             x=df_plot['date_str'],
             y=df_plot[target_col],
             marker_color=['#ef5350' if x >= 0 else '#66bb6a' for x in df_plot[target_col]],
+            name=view_mode,
             hovertemplate="日期: %{x}<br>張數: %{y:+.0f} 張<extra></extra>"
         ))
         fig.update_layout(
