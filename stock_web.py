@@ -21,42 +21,44 @@ st.markdown("""
     button:focus { outline: none !important; box-shadow: none !important; }
     div[role="radiogroup"] { justify-content: center; margin-bottom: 1rem; }
     
-    /* 強化 Primary 按鈕顏色 */
     button[kind="primary"] {
         background-color: #3b82f6 !important; border: none !important; color: white !important;
     }
-    
-    /* 【手機版排版鎖定】強制 4x4 矩陣，且不影響日期輸入 */
+
+    /* 【終極版：CSS Grid 網格鎖定】 */
     @media (max-width: 768px) {
-        /* 1. 針對「查詢區間」的 4 欄位進行強制並排 */
-        /* 我們精確定位包含 4 個 column 的容器 */
+        /* 針對包含 4 個 column 的區間按鈕列 */
         div[data-testid="stHorizontalBlock"]:has(div[data-testid="column"]:nth-of-type(4)) {
+            display: grid !important;
+            grid-template-columns: repeat(4, 1fr) !important; /* 強制分 4 股，每股 25% */
+            gap: 6px !important;
             flex-direction: row !important;
-            display: flex !important;
-            gap: 4px !important;
-            margin-bottom: -10px !important; /* 壓縮行高 */
         }
         
-        /* 2. 強制讓這些 Column 平均分配寬度 */
+        /* 移除 Streamlit 原本賦予 Column 的所有寬度限制 */
         div[data-testid="stHorizontalBlock"]:has(div[data-testid="column"]:nth-of-type(4)) div[data-testid="column"] {
-            flex: 1 1 0% !important;
+            width: 100% !important;
+            max-width: 100% !important;
             min-width: 0 !important;
             padding: 0 !important;
         }
 
-        /* 3. 調整按鈕內文字大小與間距，防止溢出 */
+        /* 壓縮按鈕空間以符合 4 欄顯示 */
         .stButton button {
-            padding: 4px 0px !important;
+            padding: 6px 0px !important;
             font-size: 12px !important;
+            white-space: nowrap !important;
         }
 
-        /* 4. 確保「開始/結束日期」與「執行分析」維持 100% 寬度上下排列 */
-        /* 因為這兩者不是 4 欄位結構，所以會自動回歸瀑布流 */
+        /* 保持開始/結束日期為 100% 寬度的上下排列 */
+        div[data-testid="stDateInput"] {
+            width: 100% !important;
+        }
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 名稱對照大數據優化 ---
+# --- 2. 名稱對照大數據 (載入全市場字典) ---
 @st.cache_data(ttl=86400)
 def load_all_stock_names():
     try:
@@ -136,7 +138,7 @@ presets = [
 if 'label' not in st.session_state:
     st.session_state.label, st.session_state.start_date = "2周", datetime.date.today() - datetime.timedelta(days=13)
 
-# 渲染 4x4 按鈕
+# 渲染區間按鈕
 for row in presets:
     cols = st.columns(4)
     for i, (label, days) in enumerate(row):
@@ -145,7 +147,6 @@ for row in presets:
             st.session_state.label = label
             st.rerun()
 
-# 日期輸入（維持上下排列）
 start_date = st.date_input("開始日期", st.session_state.start_date)
 end_date = st.date_input("結束日期", datetime.date.today())
 run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
@@ -186,11 +187,11 @@ if run_btn:
             st.session_state.info = {"start": start_date, "end": end_date, "label": st.session_state.label, "days": pd.concat(results)['date'].nunique()}
             st.session_state.has_run = True
 
-# --- 6. 渲染圖表與報告 ---
+# --- 6. 圖表與總結 ---
 if st.session_state.get('has_run'):
     info = st.session_state.info
     st.success(f"✅ 完成！涵蓋 {info['days']} 個交易日")
-    sel_label = st.radio("切換數據", ["三大法人總和", "外資", "投信", "自營商"], horizontal=True, label_visibility="collapsed")
+    sel_label = st.radio("切換法人", ["三大法人總和", "外資", "投信", "自營商"], horizontal=True, label_visibility="collapsed")
     y_col = {"三大法人總和":"total_net", "外資":"f_net", "投信":"it_net", "自營商":"d_net"}[sel_label]
     
     for sid in st.session_state.targets:
