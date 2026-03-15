@@ -9,11 +9,14 @@ import os
 # --- 1. 環境基礎設定 ---
 st.set_page_config(page_title="三大法人籌碼變化", layout="centered")
 
-# CSS 修正：移除會干擾手機版頂部選單的隱藏語法
+# CSS 修正：防止主畫面的欄位 (Columns) 在手機版垂直堆疊
 st.markdown("""
     <style>
     footer {visibility: hidden;}
+    /* 按鈕基本樣式 */
     .stButton button { width: 100%; padding: 0.3rem; font-size: 14px; border-radius: 5px; }
+    
+    /* 狀態框樣式 */
     .status-box { 
         background-color: #1e1e1e; 
         padding: 12px; 
@@ -22,7 +25,23 @@ st.markdown("""
         border-left: 5px solid #007bff;
         color: #ffffff;
     }
+    
+    /* Toggle 置中 */
     div[role="radiogroup"] { justify-content: center; margin-bottom: 1rem; }
+    
+    /* 【關鍵排版修復】強制讓橫向區塊在手機版保持並排，不變成垂直瀑布流 */
+    @media (max-width: 768px) {
+        div[data-testid="stHorizontalBlock"] {
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+        }
+        div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+            width: auto !important;
+            flex: 1 1 0% !important;
+            min-width: 0 !important;
+            padding: 0 0.2rem !important; /* 微調按鈕間距 */
+        }
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -129,9 +148,13 @@ with st.expander("💾 儲存 / 刪除目前清單"):
 
 # [區塊 2：查詢區間]
 st.subheader("2. 查詢區間")
+
+# 【完美還原】原本豐富的 4x4 區間選項
 presets = [
+    [("1天", 1), ("2天", 2), ("3天", 3), ("4天", 4)],
     [("1周", 7), ("2周", 14), ("3周", 21), ("1月", 30)],
-    [("2月", 60), ("1季", 90), ("半年", 182), ("1年", 365)]
+    [("6周", 42), ("2月", 60), ("1季", 90), ("半年", 182)],
+    [("1年", 365), ("2年", 730), ("3年", 1095), ("5年", 1825)]
 ]
 
 if 'start_date' not in st.session_state:
@@ -145,6 +168,7 @@ for row in presets:
             st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=days-1)
             st.session_state.label = label
 
+# 日期輸入框現在也會在手機版乖乖並排了
 c_start, c_end = st.columns(2)
 with c_start:
     start_date = st.date_input("開始日期", st.session_state.start_date)
