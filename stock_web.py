@@ -106,7 +106,6 @@ def fetch_finmind_institutional(stock_id, start_date, end_date):
     return None
 
 # --- 3. 股票清單管理 (SaaS 升級版：Cookie 隔離 + 內建概念股) ---
-# 內建黃金概念股 (全域常數，無法被使用者刪除)
 DEFAULT_CONCEPT_STOCKS = {
     "🔥 熱門：航運三雄": "2603, 2609, 2615",
     "🤖 趨勢：AI 伺服器": "2382, 3231, 2376, 6669",
@@ -115,11 +114,10 @@ DEFAULT_CONCEPT_STOCKS = {
     "💰 存股：金融金控": "2881, 2882, 2886, 2891"
 }
 
-@st.cache_resource
-def get_cookie_manager():
-    return stx.CookieManager()
-
-cookie_manager = get_cookie_manager()
+# 【修復重點】改用 session_state 取代 @st.cache_resource，避免 Widget 快取衝突
+if 'cookie_manager' not in st.session_state:
+    st.session_state['cookie_manager'] = stx.CookieManager()
+cookie_manager = st.session_state['cookie_manager']
 
 def load_user_lists():
     """從使用者的瀏覽器 Cookie 讀取專屬清單"""
