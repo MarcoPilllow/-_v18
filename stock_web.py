@@ -95,3 +95,175 @@ def load_lists():
     if os.path.exists(LIST_FILE):
         try:
             with open(LIST_FILE, "r", encoding="utf-8") as f: return json.load(f)
+        except: return {"常用航運": "2603, 2609, 2615"}
+    return {"常用航運": "2603, 2609, 2615"}
+
+def save_lists(lists):
+    with open(LIST_FILE, "w", encoding="utf-8") as f:
+        json.dump(lists, f, ensure_ascii=False, indent=4)
+
+if 'custom_lists' not in st.session_state:
+    st.session_state.custom_lists = load_lists()
+
+# --- 4. 側邊欄 UI ---
+with st.sidebar:
+    st.header("📂 股票清單管理")
+    list_names = list(st.session_state.custom_lists.keys())
+    selected_list = st.selectbox("讀取組合", ["請選擇..."] + list_names)
+    
+    initial_stocks = "2603, 2609, 2615"
+    if selected_list != "請選擇...":
+        initial_stocks = st.session_state.custom_lists[selected_list]
+    
+    stock_input = st.text_input("1. 目前查詢股票代號", value=initial_stocks)
+    new_list_name = st.text_input("💾 儲存組合名稱", placeholder="例如: 航運三雄")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("💾 儲存"):
+            if new_list_name and stock_input:
+                st.session_state.custom_lists[new_list_name] = stock_input
+                save_lists(st.session_state.custom_lists); st.rerun()
+    with c2:
+        if st.button("❌ 刪除"):
+            if selected_list != "請選擇...":
+                del st.session_state.custom_lists[selected_list]
+                save_lists(st.session_state.custom_lists); st.rerun()
+
+    st.divider()
+    st.header("📅 快速區間選擇")
+    presets = [
+        [("1天", 1), ("2天", 2), ("3天", 3), ("4天", 4)],
+        [("1周", 7), ("2周", 14), ("3周", 21), ("1月", 30)],
+        [("6周", 42), ("2月", 60), ("1季", 90), ("半年", 182)],
+        [("1年", 365), ("2年", 730), ("3年", 1095), ("5年", 1825)]
+    ]
+    
+    if 'start_date' not in st.session_state:
+        st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=14)
+        st.session_state.label = "自定義"
+
+    for row in presets:
+        cols = st.columns(4)
+        for i, (label, days) in enumerate(row):
+            if cols[i].button(label):
+                st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=days-1)
+                st.session_state.label = label
+
+    st.divider()
+    start_date = st.date_input("開始日期", st.session_state.start_date)
+    end_date = st.date_input("結束日期", datetime.date.today())
+    run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
+
+# --- 5. 主視覺顯示與高效數據處理 ---
+st.title("📊 三大法人籌碼變化")
+
+if run_btn:
+    targets = [s.strip() for s in stock_input.replace('，', ',').split(',') if s.strip()]
+    
+    if not targets:
+        st.warning("⚠️ 請輸入至少一檔股票代號。")
+    else:
+        progress_bar = st.progress(0)
+        status_area = st.empty()
+        
+        summary = {t: {'name': t, 'f': 0, 'it': 0, 'd': 0, 'tot': 0} for t in targets}
+        results_list = []
+        
+        for idx, stock in enumerate(targets):
+            status_area.markdown(f"""
+                <div class="status-box">
+                    <b>⚡ 正在彙總區間資料：[{idx+1} / {len(targets)}]</b><br>
+                    代號：{stock}
+                </div>
+            """, unsafe_allow_html=True)
+            
+            stock_name = get_stock_name(stock)
+            summary[stock]['name'] = stock_name
+            df = fetch_finmind_institutional(stock, start_date, end_date)
+            
+            if df is not None and not df.empty:
+                results_list.append(df)
+                summary[stock]['f'] = df['f_net'].sum()
+                summary[stock]['it'] = df['it_net'].sum()
+                summary[stock]['d'] = df['d_net'].sum()
+                summary[stock]['tot'] = df['total_net'].sum()
+                
+            progress_bar.progress((idx + 1) / len(targets))
+
+        status_area.empty()
+        progress_bar.empty()
+
+        if results_list:
+            full_df = pd.concat(results_list)
+            actual_trading_days = full_df['date'].nunique()
+            
+            st.session_state.full_df = full_df
+            st.session_state.summary = summary
+            st.session_state.targets = targets
+            st.session_state.analysis_info = {
+                "start": start_date, "end": end_date, 
+                "label": st.session_state.get('label', '自定義'), 
+                "days": actual_trading_days
+            }
+            st.session_state.has_run = True
+        else:
+            st.error("❌ 抓取失敗，區間內可能無資料。")
+            st.session_state.has_run = False
+
+# === 6. 圖表 Toggle 與 報告渲染 ===
+if st.session_state.get('has_run', False):
+    info = st.session_state.analysis_info
+    st.success(f"✅ 高效分析完成！共涵蓋 {info['days']} 個有效交易日")
+    
+    metric_options = {
+        "三大法人總和": "total_net",
+        "外資": "f_net",
+        "投信": "it_net",
+        "自營商": "d_net"
+    }
+    
+    selected_label = st.radio(
+        "🔄 切換檢視數據", 
+        list(metric_options.keys()), 
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    y_column = metric_options[selected_label]
+    
+    full_df = st.session_state.full_df
+    summary = st.session_state.summary
+    targets = st.session_state.targets
+
+    for stock in targets:
+        sub_df = full_df[full_df['id'] == stock].sort_values('date')
+        if sub_df.empty: continue
+        fig = go.Figure()
+        
+        # 轉換回「張」數 (FinMind預設是股)
+        y_data = sub_df[y_column] / 1000
+        
+        fig.add_trace(go.Bar(
+            x=sub_df['date'],
+            y=y_data,
+            marker_color=['#ef5350' if x>=0 else '#66bb6a' for x in y_data],
+            name="張數",
+            hovertemplate="日期: %{x}<br>張數: %{y:+.0f} 張<extra></extra>"
+        ))
+        
+        fig.update_layout(
+            title=f"【{summary[stock]['name']}】{selected_label} (張)",
+            template="plotly_dark",
+            margin=dict(l=10, r=10, t=50, b=10), height=300, xaxis=dict(tickformat="%m/%d")
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+    st.subheader("📋 深度會診報告")
+    report = f"【期間：{info['start']} ~ {info['end']}】\n【區間：{info['label']}】\n【有效交易日：{info['days']} 天】\n" + "═"*45 + "\n\n"
+    for title, key in [("[三大法人總和]", 'tot'), ("[外資]", 'f'), ("[投信]", 'it'), ("[自營商]", 'd')]:
+        report += f"{title}\n"
+        for s in targets: 
+            report += f"{summary[s]['name']}: {summary[s][key]//1000:+.0f} 張\n"
+        report += "\n"
+    st.code(report, language="text")
