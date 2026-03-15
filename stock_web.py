@@ -3,17 +3,12 @@ import requests
 import pandas as pd
 import datetime
 import plotly.graph_objects as go
-import time
-import urllib3
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# 1. 環境基礎設定
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-st.set_page_config(page_title="三大法人手機診斷版 v18.8", layout="centered")
+# --- 1. 環境基礎設定 ---
+st.set_page_config(page_title="三大法人手機診斷版 v19.0", layout="centered")
 
-# CSS 優化：自定義進度框與隱藏殘影
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -28,30 +23,68 @@ st.markdown("""
         border-left: 5px solid #007bff;
         color: #ffffff;
     }
-    /* 美化 Radio 按鈕間距 */
     div[role="radiogroup"] { justify-content: center; margin-bottom: 1rem; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 雲端緩存機制 ---
+# --- 2. 雲端緩存與 FinMind API 策略 ---
 @st.cache_data(ttl=86400)
-def fetch_twse_cache(date_str):
-    url = f"https://www.twse.com.tw/fund/T86?response=json&date={date_str}&selectType=ALL"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://www.twse.com.tw/zh/page/trading/fund/T86.html'
-    }
+def get_stock_name(stock_id):
+    """透過證交所輕量 API 取得股票名稱"""
     try:
-        resp = requests.get(url, headers=headers, verify=False, timeout=15).json()
-        if resp.get('stat') == 'OK' and 'data' in resp:
-            df = pd.DataFrame(resp['data'])
-            df = df[[0, 1, 4, 7, 10, 11, 18]]
-            df.columns = ['id', 'name', 'f_buy', 'f_trust', 'it_net', 'd_net', 'total_net']
-            for col in df.columns[2:]:
-                df[col] = df[col].astype(str).str.replace(',', '').astype(int)
-            df['f_net'] = df['f_buy'] + df['f_trust']
-            return df
+        url = f"https://www.twse.com.tw/zh/api/codeQuery?query={stock_id}"
+        resp = requests.get(url, timeout=5).json()
+        if resp.get("suggestions"):
+            return resp["suggestions"][0].split("\t")[1]
     except:
+        pass
+    return str(stock_id)
+
+@st.cache_data(ttl=3600)
+def fetch_finmind_institutional(stock_id, start_date, end_date):
+    """【核心升級】使用 FinMind API，單次拉取區間內該股票的所有法人買賣超"""
+    url = "https://api.finmindtrade.com/api/v4/data"
+    parameter = {
+        "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
+        "data_id": str(stock_id),
+        "start_date": start_date.strftime("%Y-%m-%d"),
+        "end_date": end_date.strftime("%Y-%m-%d")
+    }
+    
+    try:
+        resp = requests.get(url, params=parameter, timeout=15).json()
+        if resp.get('status') == 200 and resp.get('data'):
+            df = pd.DataFrame(resp['data'])
+            if df.empty: return None
+            
+            # 計算淨買賣超 (FinMind 的數據單位為「股」)
+            df['net'] = df['buy'] - df['sell']
+            
+            # 將 FinMind 的細部法人名稱歸類為三大法人
+            def classify_investor(name):
+                if '外資' in name: return 'f_net'
+                elif '投信' in name: return 'it_net'
+                elif '自營商' in name: return 'd_net'
+                return 'other'
+                
+            df['type'] = df['name'].apply(classify_investor)
+            
+            # 以日期分組，將不同法人的 net 加總 (例如自營商有自行買賣和避險)
+            pivot_df = df.pivot_table(index='date', columns='type', values='net', aggfunc='sum').fillna(0)
+            
+            # 確保欄位都存在，避免報錯
+            for col in ['f_net', 'it_net', 'd_net']:
+                if col not in pivot_df.columns:
+                    pivot_df[col] = 0
+                    
+            pivot_df['total_net'] = pivot_df['f_net'] + pivot_df['it_net'] + pivot_df['d_net']
+            pivot_df = pivot_df.reset_index()
+            pivot_df['id'] = stock_id
+            
+            # 轉換日期格式以便與 Plotly 相容
+            pivot_df['date'] = pd.to_datetime(pivot_df['date']).dt.strftime('%Y-%m-%d')
+            return pivot_df
+    except Exception as e:
         return None
     return None
 
@@ -121,90 +154,70 @@ with st.sidebar:
     end_date = st.date_input("結束日期", datetime.date.today())
     run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
 
-# --- 5. 主視覺顯示與並行加速邏輯 ---
+# --- 5. 主視覺顯示與高效數據處理 ---
 st.title("📊 三大法人籌碼會診")
 
-# === 核心修改區塊 1：執行分析並將結果存入 Session State ===
 if run_btn:
     targets = [s.strip() for s in stock_input.replace('，', ',').split(',') if s.strip()]
-    all_days = pd.date_range(start_date, end_date)
-    trading_days = [d for d in all_days if d.weekday() < 5] # 過濾週末
-    total_tasks = len(trading_days)
     
-    if total_tasks == 0:
-        st.warning("⚠️ 所選區間內無交易日。")
+    if not targets:
+        st.warning("⚠️ 請輸入至少一檔股票代號。")
     else:
-        results_map = {}
         progress_bar = st.progress(0)
         status_area = st.empty()
-        eta_area = st.empty()
         
         summary = {t: {'name': t, 'f': 0, 'it': 0, 'd': 0, 'tot': 0} for t in targets}
-        start_time_exec = time.time()
+        results_list = []
         
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_date = {executor.submit(fetch_twse_cache, d.strftime('%Y%m%d')): d for d in trading_days}
-            completed = 0
-            for future in as_completed(future_to_date):
-                date_obj = future_to_date[future]
-                completed += 1
+        # 改為針對「股票」發送請求，大幅降低 Request 次數
+        for idx, stock in enumerate(targets):
+            status_area.markdown(f"""
+                <div class="status-box">
+                    <b>⚡ 正在彙總區間資料：[{idx+1} / {len(targets)}]</b><br>
+                    代號：{stock}
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # 取得名稱並抓取資料
+            stock_name = get_stock_name(stock)
+            summary[stock]['name'] = stock_name
+            df = fetch_finmind_institutional(stock, start_date, end_date)
+            
+            if df is not None and not df.empty:
+                results_list.append(df)
+                summary[stock]['f'] = df['f_net'].sum()
+                summary[stock]['it'] = df['it_net'].sum()
+                summary[stock]['d'] = df['d_net'].sum()
+                summary[stock]['tot'] = df['total_net'].sum()
                 
-                elapsed = time.time() - start_time_exec
-                avg = elapsed / completed
-                eta = int(avg * (total_tasks - completed))
-                
-                status_area.markdown(f"""
-                    <div class="status-box">
-                        <b>🏥 並行掃描中：[{completed} / {total_tasks}]</b><br>
-                        最新完成：{date_obj.strftime('%Y-%m-%d')}
-                    </div>
-                """, unsafe_allow_html=True)
-                
-                if eta > 0:
-                    eta_area.info(f"⏳ 預計還需要 **{eta}** 秒完成")
-                else:
-                    eta_area.empty()
-                
-                df = future.result()
-                if df is not None:
-                    res = df[df['id'].isin(targets)].copy()
-                    for _, row in res.iterrows():
-                        sid = row['id']
-                        summary[sid]['name'] = row['name']
-                        summary[sid]['f'] += row['f_net']
-                        summary[sid]['it'] += row['it_net']
-                        summary[sid]['d'] += row['d_net']
-                        summary[sid]['tot'] += row['total_net']
-                    results_map[date_obj] = res.assign(date=date_obj)
-                
-                progress_bar.progress(completed / total_tasks)
+            progress_bar.progress((idx + 1) / len(targets))
 
-        eta_area.empty()
         status_area.empty()
         progress_bar.empty()
 
-        if results_map:
-            # 將算好的資料存入 Session State，避免切換選項時重新讀取
-            sorted_dates = sorted(results_map.keys())
-            st.session_state.full_df = pd.concat([results_map[d] for d in sorted_dates])
+        if results_list:
+            full_df = pd.concat(results_list)
+            # 透過實際抓到的資料計算真實的「有效交易日」
+            actual_trading_days = full_df['date'].nunique()
+            
+            st.session_state.full_df = full_df
             st.session_state.summary = summary
             st.session_state.targets = targets
             st.session_state.analysis_info = {
                 "start": start_date, "end": end_date, 
                 "label": st.session_state.get('label', '自定義'), 
-                "days": len(results_map)
+                "days": actual_trading_days
             }
             st.session_state.has_run = True
         else:
             st.error("❌ 抓取失敗，區間內可能無資料。")
             st.session_state.has_run = False
 
-# === 核心修改區塊 2：獨立渲染圖表，加入 Toggle 邏輯 ===
+# === 6. 圖表 Toggle 與 報告渲染 ===
 if st.session_state.get('has_run', False):
     info = st.session_state.analysis_info
-    st.success(f"✅ 分析完成！共載入 {info['days']} 個交易日")
+    st.success(f"✅ 高效分析完成！共涵蓋 {info['days']} 個有效交易日")
     
-    # --- 新增 Toggle 選項 ---
     metric_options = {
         "三大法人總和": "total_net",
         "外資": "f_net",
@@ -212,27 +225,24 @@ if st.session_state.get('has_run', False):
         "自營商": "d_net"
     }
     
-    # 使用水平排列的 radio 做出 Toggle 效果
     selected_label = st.radio(
         "🔄 切換檢視數據", 
         list(metric_options.keys()), 
         horizontal=True,
-        label_visibility="collapsed" # 隱藏標題讓視覺更像獨立的 Toggle bar
+        label_visibility="collapsed"
     )
     y_column = metric_options[selected_label]
     
-    # 讀取暫存的資料
     full_df = st.session_state.full_df
     summary = st.session_state.summary
     targets = st.session_state.targets
 
-    # 顯示圖表
     for stock in targets:
         sub_df = full_df[full_df['id'] == stock].sort_values('date')
         if sub_df.empty: continue
         fig = go.Figure()
         
-        # 動態調整 Y 軸為使用者選定的法人數據
+        # 轉換回「張」數
         y_data = sub_df[y_column] / 1000
         
         fig.add_trace(go.Bar(
@@ -240,7 +250,7 @@ if st.session_state.get('has_run', False):
             y=y_data,
             marker_color=['#ef5350' if x>=0 else '#66bb6a' for x in y_data],
             name="張數",
-            hovertemplate="日期: %{x|%Y/%m/%d}<br>張數: %{y:+.0f} 張<extra></extra>"
+            hovertemplate="日期: %{x}<br>張數: %{y:+.0f} 張<extra></extra>"
         ))
         
         fig.update_layout(
@@ -250,13 +260,12 @@ if st.session_state.get('has_run', False):
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    # 顯示診斷報告
     st.divider()
     st.subheader("📋 深度會診報告")
     report = f"【期間：{info['start']} ~ {info['end']}】\n【區間：{info['label']}】\n【有效交易日：{info['days']} 天】\n" + "═"*45 + "\n\n"
     for title, key in [("[三大法人總和]", 'tot'), ("[外資]", 'f'), ("[投信]", 'it'), ("[自營商]", 'd')]:
         report += f"{title}\n"
         for s in targets: 
-            report += f"{summary[s]['name']}: {summary[s][key]//1000:+,} 張\n"
+            report += f"{summary[s]['name']}: {summary[s][key]//1000:+.0f} 張\n"
         report += "\n"
     st.code(report, language="text")
