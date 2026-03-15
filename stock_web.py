@@ -9,12 +9,10 @@ import os
 # --- 1. 環境基礎設定 ---
 st.set_page_config(page_title="三大法人籌碼變化", layout="centered")
 
-# CSS 修正：終極自適應排版，完美解決 4x4 矩陣與 2x1 按鈕的空間分配
+# CSS 修正：暴力破解 Streamlit 手機版換行限制
 st.markdown("""
     <style>
     footer {visibility: hidden;}
-    /* 按鈕基本樣式 */
-    .stButton button { width: 100%; padding: 0.3rem; font-size: 14px; border-radius: 5px; }
     
     /* 狀態框樣式 */
     .status-box { 
@@ -29,22 +27,25 @@ st.markdown("""
     /* Toggle 置中 */
     div[role="radiogroup"] { justify-content: center; margin-bottom: 1rem; }
     
-    /* 【神級排版修復】自動等比例縮放欄位，告別裂開的排版 */
+    /* 【終極排版鎖定】無視內部標籤變動，強制水平等分 */
     @media (max-width: 768px) {
-        div[data-testid="stHorizontalBlock"] {
-            flex-direction: row !important;  /* 強制水平排列 */
-            flex-wrap: wrap !important;      /* 允許換行 */
-            gap: 6px !important;             /* 極限壓縮間距，緊密但不黏死 */
-            margin-bottom: 4px !important;   /* 壓縮列與列之間的距離 */
+        /* 攔截水平容器，禁止它變成垂直 */
+        [data-testid="stHorizontalBlock"] {
+            flex-direction: row !important;
+            display: flex !important;
+            gap: 4px !important; /* 按鈕之間的微小間距 */
         }
-        div[data-testid="column"] {
-            min-width: 20% !important;       /* 確保一行最少能塞下 4 個 */
-            flex: 1 1 0 !important;          /* 魔法屬性：讓欄位自動均分剩餘空間 */
-            padding: 0 !important;           /* 拔除預設內邊距 */
+        /* 選擇容器內的所有直行元素，強制平分空間 */
+        [data-testid="stHorizontalBlock"] > div {
+            flex: 1 1 0 !important;
+            min-width: 0 !important;
+            padding: 0 !important; 
         }
+        /* 壓縮手機版按鈕內邊距，防止字被切掉 */
         .stButton button {
-            padding: 0.2rem 0 !important;    /* 縮小按鈕內邊距 */
-            font-size: 13px !important;      /* 稍微縮小字體以適應 4 個並排 */
+            padding: 4px 0px !important;
+            font-size: 13px !important;
+            width: 100% !important;
         }
     }
     </style>
@@ -53,7 +54,6 @@ st.markdown("""
 # --- 2. 雲端緩存與 FinMind API 策略 ---
 @st.cache_data(ttl=86400)
 def get_stock_name(stock_id):
-    """透過證交所輕量 API 取得股票名稱"""
     try:
         url = f"https://www.twse.com.tw/zh/api/codeQuery?query={stock_id}"
         resp = requests.get(url, timeout=5).json()
@@ -65,7 +65,6 @@ def get_stock_name(stock_id):
 
 @st.cache_data(ttl=3600)
 def fetch_finmind_institutional(stock_id, start_date, end_date):
-    """使用 FinMind API，單次拉取區間內該股票的所有法人買賣超"""
     url = "https://api.finmindtrade.com/api/v4/data"
     parameter = {
         "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
@@ -73,7 +72,6 @@ def fetch_finmind_institutional(stock_id, start_date, end_date):
         "start_date": start_date.strftime("%Y-%m-%d"),
         "end_date": end_date.strftime("%Y-%m-%d")
     }
-    
     try:
         resp = requests.get(url, params=parameter, timeout=15).json()
         if resp.get('status') == 200 and resp.get('data'):
@@ -121,7 +119,7 @@ def save_lists(lists):
 if 'custom_lists' not in st.session_state:
     st.session_state.custom_lists = load_lists()
 
-# --- 4. 全新手機版 UI (無側邊欄設計) ---
+# --- 4. 全新手機版 UI ---
 st.title("📊 三大法人籌碼變化")
 
 # [區塊 1：查詢目標]
@@ -154,7 +152,7 @@ with st.expander("💾 儲存 / 刪除目前清單"):
 # [區塊 2：查詢區間]
 st.subheader("2. 查詢區間")
 
-# 4x4 區間選項矩陣 (這次絕對不會裂開了)
+# 4x4 區間選項矩陣
 presets = [
     [("1天", 1), ("2天", 2), ("3天", 3), ("4天", 4)],
     [("1周", 7), ("2周", 14), ("3周", 21), ("1月", 30)],
@@ -173,7 +171,7 @@ for row in presets:
             st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=days-1)
             st.session_state.label = label
 
-# 手機端最好閱讀的上下排列輸入框
+# 保持上下排列的日期輸入框
 start_date = st.date_input("開始日期", st.session_state.start_date)
 end_date = st.date_input("結束日期", datetime.date.today())
 
