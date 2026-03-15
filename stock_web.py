@@ -5,23 +5,31 @@ import datetime
 import plotly.graph_objects as go
 import json
 import os
+import time
 
 # --- 1. 環境基礎設定 ---
 st.set_page_config(page_title="三大法人籌碼變化", layout="centered")
 
-# CSS 修正：暴力破解 Streamlit 手機版換行限制
+# CSS 修正：暴力破解 Streamlit 手機版換行限制與美化狀態框
 st.markdown("""
     <style>
     footer {visibility: hidden;}
     
-    /* 狀態框樣式 */
+    /* 狀態框樣式升級：加入更清楚的層次 */
     .status-box { 
         background-color: #1e1e1e; 
-        padding: 12px; 
+        padding: 15px; 
         border-radius: 8px; 
         margin-bottom: 10px; 
-        border-left: 5px solid #007bff;
+        border-left: 5px solid #ff4b4b; /* 改用醒目的紅色邊條 */
         color: #ffffff;
+        font-size: 15px;
+        line-height: 1.6;
+    }
+    .status-box hr {
+        margin: 8px 0;
+        border: none;
+        border-top: 1px solid #444;
     }
     
     /* Toggle 置中 */
@@ -29,19 +37,16 @@ st.markdown("""
     
     /* 【終極排版鎖定】無視內部標籤變動，強制水平等分 */
     @media (max-width: 768px) {
-        /* 攔截水平容器，禁止它變成垂直 */
         [data-testid="stHorizontalBlock"] {
             flex-direction: row !important;
             display: flex !important;
-            gap: 4px !important; /* 按鈕之間的微小間距 */
+            gap: 4px !important;
         }
-        /* 選擇容器內的所有直行元素，強制平分空間 */
         [data-testid="stHorizontalBlock"] > div {
             flex: 1 1 0 !important;
             min-width: 0 !important;
             padding: 0 !important; 
         }
-        /* 壓縮手機版按鈕內邊距，防止字被切掉 */
         .stButton button {
             padding: 4px 0px !important;
             font-size: 13px !important;
@@ -152,7 +157,6 @@ with st.expander("💾 儲存 / 刪除目前清單"):
 # [區塊 2：查詢區間]
 st.subheader("2. 查詢區間")
 
-# 4x4 區間選項矩陣
 presets = [
     [("1天", 1), ("2天", 2), ("3天", 3), ("4天", 4)],
     [("1周", 7), ("2周", 14), ("3周", 21), ("1月", 30)],
@@ -164,12 +168,18 @@ if 'start_date' not in st.session_state:
     st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=14)
     st.session_state.label = "自定義"
 
+# 【重點更新】動態高亮目前選擇的按鈕
 for row in presets:
     cols = st.columns(4)
     for i, (label, days) in enumerate(row):
-        if cols[i].button(label):
+        # 如果該按鈕是目前選中的 label，就設為 primary (亮色)
+        is_active = (st.session_state.get('label') == label)
+        btn_type = "primary" if is_active else "secondary"
+        
+        if cols[i].button(label, type=btn_type, use_container_width=True):
             st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=days-1)
             st.session_state.label = label
+            st.rerun() # 強制刷新畫面，讓按鈕顏色瞬間改變
 
 # 保持上下排列的日期輸入框
 start_date = st.date_input("開始日期", st.session_state.start_date)
@@ -192,11 +202,24 @@ if run_btn:
         summary = {t: {'name': t, 'f': 0, 'it': 0, 'd': 0, 'tot': 0} for t in targets}
         results_list = []
         
+        total_tasks = len(targets)
+        start_time_exec = time.time()
+        
         for idx, stock in enumerate(targets):
+            completed = idx + 1
+            
+            # 【重點更新】計算 ETA (預估剩餘時間)
+            elapsed = time.time() - start_time_exec
+            avg_time_per_task = elapsed / completed if completed > 0 else 0
+            eta_seconds = int(avg_time_per_task * (total_tasks - completed))
+            
+            # 【重點更新】詳細的查詢條件與進度面板
             status_area.markdown(f"""
                 <div class="status-box">
-                    <b>⚡ 正在彙總區間資料：[{idx+1} / {len(targets)}]</b><br>
-                    代號：{stock}
+                    <b>🔍 查詢條件：</b> {st.session_state.get('label', '自定義')} ({start_date.strftime('%m/%d')} ~ {end_date.strftime('%m/%d')})<br>
+                    <hr>
+                    <b>⚡ 處理進度：</b> [{completed} / {total_tasks}] 正在解析 {stock}<br>
+                    <b>⏱️ 預估剩餘：</b> {eta_seconds} 秒
                 </div>
             """, unsafe_allow_html=True)
             
@@ -211,7 +234,7 @@ if run_btn:
                 summary[stock]['d'] = df['d_net'].sum()
                 summary[stock]['tot'] = df['total_net'].sum()
                 
-            progress_bar.progress((idx + 1) / len(targets))
+            progress_bar.progress(completed / total_tasks)
 
         status_area.empty()
         progress_bar.empty()
