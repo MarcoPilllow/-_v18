@@ -10,14 +10,6 @@ import extra_streamlit_components as stx
 # --- 1. 環境基礎設定 ---
 st.set_page_config(page_title="三大法人籌碼變化", page_icon="📊", layout="centered")
 
-st.markdown(f"""
-    <head>
-        <meta property="og:title" content="三大法人籌碼變化">
-        <meta property="og:description" content="台股籌碼即時診斷：已過濾權證汙染，支援純現貨中文搜尋。">
-        <meta property="og:type" content="website">
-    </head>
-    """, unsafe_allow_html=True)
-
 st.markdown("""
     <style>
     footer {visibility: hidden;}
@@ -39,10 +31,10 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 核心 API 函數 (含權證過濾邏輯) ---
+# --- 2. 核心 API 函數 ---
 @st.cache_data(ttl=86400)
-def search_stock_filtered(query):
-    """搜尋並自動剔除權證（代號長度 > 4 或 含有英文者）"""
+def search_stock_auto(query):
+    """搜尋證交所 API，返回過濾後的『代碼 名稱』清單"""
     query = str(query).strip()
     if not query: return []
     try:
@@ -51,28 +43,22 @@ def search_stock_filtered(query):
         resp = requests.get(url, headers=headers, timeout=5).json()
         if resp.get("suggestions") and resp["suggestions"][0] != "No Data Found":
             raw_list = resp["suggestions"]
-            filtered_list = []
+            filtered = []
             for s in raw_list:
                 parts = s.split("\t")
                 sid = parts[0]
-                # 關鍵過濾：現貨股票代號為 4 碼數字（ETF 為 5~6 碼但不含英文）
-                # 權證代號通常極長且包含大量字母，或是 6 碼且具有特定規則
-                # 這裡採取嚴格過濾：長度必須為 4 (普通股) 或 5~6 且全數字 (ETF)
+                # 過濾權證：只接受 4~6 碼純數字 (現貨與 ETF)
                 if sid.isdigit() and len(sid) <= 6:
-                    filtered_list.append(s.replace("\t", " "))
-            return filtered_list
+                    filtered.append(s.replace("\t", " "))
+            return filtered
     except: pass
     return []
 
 @st.cache_data(ttl=3600)
 def fetch_finmind_institutional(stock_id, start_date, end_date):
     url = "https://api.finmindtrade.com/api/v4/data"
-    params = {
-        "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
-        "data_id": str(stock_id),
-        "start_date": start_date.strftime("%Y-%m-%d"),
-        "end_date": end_date.strftime("%Y-%m-%d")
-    }
+    params = {"dataset": "TaiwanStockInstitutionalInvestorsBuySell", "data_id": str(stock_id), 
+              "start_date": start_date.strftime("%Y-%m-%d"), "end_date": end_date.strftime("%Y-%m-%d")}
     try:
         resp = requests.get(url, params=params, timeout=15).json()
         if resp.get('status') == 200 and resp.get('data'):
@@ -90,7 +76,6 @@ def fetch_finmind_institutional(stock_id, start_date, end_date):
                 if col not in pivot.columns: pivot[col] = 0
             pivot['total_net'] = pivot['f_net'] + pivot['it_net'] + pivot['d_net']
             pivot = pivot.reset_index()
-            pivot['id'] = stock_id
             pivot['date'] = pd.to_datetime(pivot['date']).dt.strftime('%Y-%m-%d')
             return pivot
     except: return None
@@ -106,28 +91,43 @@ def load_user_lists():
 
 user_lists = load_user_lists()
 
-# --- 4. UI 介面 ---
+# --- 4. UI 介面佈局 ---
 st.title("📊 三大法人籌碼變化")
 
 st.subheader("1. 查詢目標")
 selected_list_name = st.selectbox("快速載入常用組合", ["自訂輸入..."] + list(user_lists.keys()))
 
-default_stocks = ["2603 長榮", "2609 陽明", "2615 萬海"]
+# 初始化清單
+if 'current_tags' not in st.session_state:
+    st.session_state.current_tags = ["2603 長榮", "2609 陽明", "2615 萬海"]
+
 if selected_list_name != "自訂輸入...":
-    default_stocks = user_lists[selected_list_name].split(",")
+    st.session_state.current_tags = user_lists[selected_list_name].split(",")
 
-# 輸入中文名稱也會自動過濾權證
-search_query = st.text_input("🔍 搜尋並新增股票 (支援中文/代號，已過濾權證)", key="stock_search")
-options = search_stock_filtered(search_query) if search_query else []
+# 【進化版搜尋框】
+search_query = st.text_input("🔍 搜尋並新增股票 (輸入代碼或名稱後按 Enter 自動加入)", key="stock_search")
 
+# 當使用者輸入文字時，自動抓取建議清單
+suggested_options = search_stock_auto(search_query) if search_query else []
+
+# 邏輯：如果使用者直接按 Enter (search_query 有值)，自動把建議的第一項塞進 st.session_state.current_tags
+if search_query and suggested_options:
+    top_hit = suggested_options[0]
+    if top_hit not in st.session_state.current_tags:
+        st.session_state.current_tags.append(top_hit)
+        # 清空輸入框需透過重新整理或特定技巧，這裡採取直接加入並讓 multiselect 呈現
+    
 final_selection = st.multiselect(
-    "目前已選清單 (可手動刪除或從上方搜尋建議點選新增)",
-    options=list(set(default_stocks + options)),
-    default=default_stocks
+    "目前已選清單 (點選下方建議或手動 X 刪除)",
+    options=list(set(st.session_state.current_tags + suggested_options)),
+    default=st.session_state.current_tags,
+    key="final_selection_widget"
 )
+# 同步回 session_state
+st.session_state.current_tags = final_selection
 
 with st.expander("💾 儲存目前清單到瀏覽器"):
-    new_name = st.text_input("組合名稱", placeholder="例如: 航運小分隊")
+    new_name = st.text_input("組合名稱", placeholder="例如: 我的自選股")
     if st.button("💾 儲存清單"):
         if new_name and final_selection:
             user_lists[new_name] = ",".join(final_selection)
@@ -144,13 +144,11 @@ for row in presets:
     cols = st.columns(4)
     for i, (label, days) in enumerate(row):
         if cols[i].button(label, type="primary" if st.session_state.label==label else "secondary", use_container_width=True):
-            st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=days-1)
-            st.session_state.label = label
+            st.session_state.start_date, st.session_state.label = datetime.date.today() - datetime.timedelta(days=days-1), label
             st.rerun()
 
 start_date = st.date_input("開始日期", st.session_state.start_date)
 end_date = st.date_input("結束日期", datetime.date.today())
-
 run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
 st.divider()
 
@@ -170,17 +168,11 @@ if run_btn:
             avg = elapsed / completed
             eta = int(avg * (len(final_selection) - completed))
             
+            # 分解 Tag 獲取 sid 與 sname
             parts = item.split(" ")
             sid, sname = parts[0], parts[1] if len(parts)>1 else parts[0]
             
-            status_area.markdown(f"""
-                <div class="status-box">
-                    <b>🔍 查詢條件：</b> {st.session_state.label} ({start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')})<br>
-                    <hr>
-                    <b>⚡ 處理進度：</b> [{completed} / {len(final_selection)}] 正在解析 <b>{sname} ({sid})</b><br>
-                    <b>⏱️ 預估剩餘：</b> {eta} 秒
-                </div>
-            """, unsafe_allow_html=True)
+            status_area.markdown(f'<div class="status-box">🔍 <b>解析中：</b> {sname} ({sid})<br><hr>⏱️ <b>預估剩餘：</b> {eta} 秒</div>', unsafe_allow_html=True)
             
             df = fetch_finmind_institutional(sid, start_date, end_date)
             if df is not None and not df.empty:
@@ -210,14 +202,11 @@ if st.session_state.get('has_run'):
     st.divider()
     st.subheader("📋 三大法人買賣超總結")
     info = st.session_state.info
-    report = f"【期間：{info['start']} ~ {info['end']}】\n【區間：{info['label']}】\n【有效交易日：{info['days']} 天】\n"
-    report += "═════════════════════════════════════════════\n\n"
-    
+    report = f"【期間：{info['start']} ~ {info['end']}】\n【區間：{info['label']}】\n【有效交易日：{info['days']} 天】\n═════════════════════════════════════════════\n\n"
     for title, key in [("[三大法人總和]", 'tot'), ("[外資]", 'f'), ("[投信]", 'it'), ("[自營商]", 'd')]:
         report += f"{title}\n"
         for res in st.session_state.results:
-            sid = res['id']
-            val = st.session_state.summary[sid][key]
+            val = st.session_state.summary[res['id']][key]
             report += f"{res['name']}: {val//1000:+,} 張\n"
         report += "\n"
     st.code(report, language="text")
