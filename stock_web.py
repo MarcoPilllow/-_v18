@@ -4,104 +4,149 @@ import pandas as pd
 import datetime
 import plotly.graph_objects as go
 import json
-import time
-import extra_streamlit_components as stx
+import os
 
 # --- 1. 環境基礎設定 ---
-st.set_page_config(page_title="三大法人籌碼變化", page_icon="📊", layout="centered")
+st.set_page_config(page_title="三大法人籌碼變化", layout="centered")
 
+# CSS 修正：終極暴力破解，確保手機版 4x4 矩陣絕對不跑位
 st.markdown("""
     <style>
     footer {visibility: hidden;}
+    
+    /* 狀態框樣式 */
     .status-box { 
-        background-color: #1e1e1e; padding: 15px; border-radius: 8px; margin-bottom: 10px; 
-        border-left: 5px solid #3b82f6; color: #ffffff; font-size: 14px; line-height: 1.6;
+        background-color: #1e1e1e; 
+        padding: 12px; 
+        border-radius: 8px; 
+        margin-bottom: 10px; 
+        border-left: 5px solid #007bff;
+        color: #ffffff;
     }
-    .status-box hr { margin: 8px 0; border: none; border-top: 1px solid #444; }
-    button:focus { outline: none !important; box-shadow: none !important; }
-    div[role="radiogroup"] { justify-content: center; margin-bottom: 1rem; }
-    button[kind="primary"] {
-        background-color: #3b82f6 !important; border: none !important; color: white !important;
-    }
-    button[kind="primary"]:hover { background-color: #2563eb !important; }
+    
+    /* Toggle 置中與美化 */
+    div[role="radiogroup"] { justify-content: center; margin-bottom: 1rem; gap: 10px; }
+    
+    /* 【終極排版鎖定】強制水平等分且填滿空間 */
     @media (max-width: 768px) {
-        [data-testid="stHorizontalBlock"] { flex-direction: row !important; display: flex !important; gap: 4px !important; }
-        .stButton button { padding: 4px 0px !important; font-size: 12px !important; }
+        /* 針對包含按鈕的水平區塊進行鎖定 */
+        [data-testid="stHorizontalBlock"]:has(button) {
+            flex-direction: row !important;
+            display: flex !important;
+            flex-wrap: nowrap !important;
+            gap: 4px !important;
+            align-items: center !important;
+        }
+        
+        /* 強制內部元件等比例增長，不縮小 */
+        [data-testid="stHorizontalBlock"]:has(button) > div {
+            flex: 1 1 0% !important;
+            min-width: 0 !important;
+            padding: 0 !important;
+        }
+
+        /* 調整按鈕高度與字體，確保手機好點擊且不換行 */
+        .stButton button {
+            padding: 8px 0px !important;
+            font-size: 13px !important;
+            line-height: 1.2 !important;
+            white-space: nowrap !important;
+            display: flex !important;
+            justify-content: center !important;
+        }
+        
+        /* 修正日期標籤字體大小 */
+        label[data-testid="stWidgetLabel"] p {
+            font-size: 15px !important;
+            font-weight: bold !important;
+        }
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 名稱對照大數據優化 (一次性下載，徹底解決名字不顯示問題) ---
+# --- 2. 數據獲取邏輯 (FinMind API) ---
 @st.cache_data(ttl=86400)
-def load_all_stock_names():
-    """從 FinMind 抓取全市場名稱清單，保證所有代號都能顯示中文"""
+def get_stock_name(stock_id):
     try:
-        url = "https://api.finmindtrade.com/api/v4/data"
-        parameter = {"dataset": "TaiwanStockInfo"}
-        resp = requests.get(url, params=parameter, timeout=15).json()
-        if resp.get('status') == 200:
-            df = pd.DataFrame(resp['data'])
-            # 建立 { '2330': '台積電' } 字典
-            return dict(zip(df['stock_id'], df['stock_name']))
-    except:
-        pass
-    return {}
-
-# 啟動時先載入全市場字典
-stock_dict = load_all_stock_names()
-
-def get_actual_name(sid):
-    sid = str(sid).strip()
-    return stock_dict.get(sid, f"代號 {sid}")
+        url = f"https://www.twse.com.tw/zh/api/codeQuery?query={stock_id}"
+        resp = requests.get(url, timeout=5).json()
+        if resp.get("suggestions"):
+            return resp["suggestions"][0].split("\t")[1]
+    except: pass
+    return str(stock_id)
 
 @st.cache_data(ttl=3600)
 def fetch_finmind_institutional(stock_id, start_date, end_date):
     url = "https://api.finmindtrade.com/api/v4/data"
-    params = {
+    parameter = {
         "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
         "data_id": str(stock_id),
         "start_date": start_date.strftime("%Y-%m-%d"),
         "end_date": end_date.strftime("%Y-%m-%d")
     }
     try:
-        resp = requests.get(url, params=params, timeout=15).json()
+        resp = requests.get(url, params=parameter, timeout=15).json()
         if resp.get('status') == 200 and resp.get('data'):
             df = pd.DataFrame(resp['data'])
+            if df.empty: return None
             df['net'] = df['buy'] - df['sell']
-            def classify(n):
-                n = str(n).lower()
+            def classify_investor(name):
+                n = str(name).lower()
                 if 'foreign' in n or '外資' in n: return 'f_net'
                 elif 'trust' in n or '投信' in n: return 'it_net'
                 elif 'dealer' in n or '自營' in n: return 'd_net'
                 return 'other'
-            df['type'] = df['name'].apply(classify)
-            pivot = df.pivot_table(index='date', columns='type', values='net', aggfunc='sum').fillna(0)
+            df['type'] = df['name'].apply(classify_investor)
+            pivot_df = df.pivot_table(index='date', columns='type', values='net', aggfunc='sum').fillna(0)
             for col in ['f_net', 'it_net', 'd_net']:
-                if col not in pivot.columns: pivot[col] = 0
-            pivot['total_net'] = pivot['f_net'] + pivot['it_net'] + pivot['d_net']
-            pivot = pivot.reset_index()
-            pivot['id'] = stock_id
-            pivot['date'] = pd.to_datetime(pivot['date']).dt.strftime('%Y-%m-%d')
-            return pivot
+                if col not in pivot_df.columns: pivot_df[col] = 0
+            pivot_df['total_net'] = pivot_df['f_net'] + pivot_df['it_net'] + pivot_df['d_net']
+            pivot_df = pivot_df.reset_index()
+            pivot_df['id'] = stock_id
+            pivot_df['date'] = pd.to_datetime(pivot_df['date']).dt.strftime('%Y-%m-%d')
+            return pivot_df
     except: return None
 
-# --- 3. Cookie 清單管理 ---
-if 'cookie_manager' not in st.session_state:
-    st.session_state['cookie_manager'] = stx.CookieManager()
-cookie_manager = st.session_state['cookie_manager']
+# --- 3. 清單管理 ---
+LIST_FILE = "stock_lists.json"
+def load_lists():
+    if os.path.exists(LIST_FILE):
+        try:
+            with open(LIST_FILE, "r", encoding="utf-8") as f: return json.load(f)
+        except: return {"常用航運": "2603, 2609, 2615"}
+    return {"常用航運": "2603, 2609, 2615"}
 
-def load_user_lists():
-    val = cookie_manager.get(cookie="user_stock_lists")
-    return json.loads(val) if val and isinstance(val, str) else (val if isinstance(val, dict) else {})
+def save_lists(lists):
+    with open(LIST_FILE, "w", encoding="utf-8") as f:
+        json.dump(lists, f, ensure_ascii=False, indent=4)
 
-user_custom_lists = load_user_lists()
-all_lists = {**{"🔥 航運三雄": "2603, 2609, 2615", "🤖 AI 伺服器": "2382, 3231, 2376"}, **user_custom_lists}
+if 'custom_lists' not in st.session_state:
+    st.session_state.custom_lists = load_lists()
 
 # --- 4. UI 介面 ---
 st.title("📊 三大法人籌碼變化")
-selected_list = st.selectbox("載入組合", ["自訂輸入..."] + list(all_lists.keys()))
-initial_stocks = all_lists[selected_list] if selected_list != "自訂輸入..." else "2603, 2609, 2615"
+
+st.subheader("1. 查詢目標")
+list_names = list(st.session_state.custom_lists.keys())
+selected_list = st.selectbox("載入組合", ["自訂輸入..."] + list_names)
+
+initial_stocks = "2603, 2609, 2615"
+if selected_list != "自訂輸入...":
+    initial_stocks = st.session_state.custom_lists[selected_list]
+
 stock_input = st.text_input("股票代號 (逗號分隔)", value=initial_stocks)
+
+with st.expander("💾 管理清單"):
+    new_list_name = st.text_input("儲存名稱")
+    c1, c2 = st.columns(2)
+    if c1.button("💾 儲存"):
+        if new_list_name and stock_input:
+            st.session_state.custom_lists[new_list_name] = stock_input
+            save_lists(st.session_state.custom_lists); st.rerun()
+    if c2.button("❌ 刪除"):
+        if selected_list != "自訂輸入...":
+            del st.session_state.custom_lists[selected_list]
+            save_lists(st.session_state.custom_lists); st.rerun()
 
 st.subheader("2. 查詢區間")
 presets = [
@@ -111,85 +156,56 @@ presets = [
     [("1年", 365), ("2年", 730), ("3年", 1095), ("5年", 1825)]
 ]
 
-if 'label' not in st.session_state:
-    st.session_state.label, st.session_state.start_date = "2周", datetime.date.today() - datetime.timedelta(days=13)
+if 'start_date' not in st.session_state:
+    st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=14)
 
 for row in presets:
     cols = st.columns(4)
     for i, (label, days) in enumerate(row):
-        if cols[i].button(label, type="primary" if st.session_state.label == label else "secondary", use_container_width=True):
+        if cols[i].button(label):
             st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=days-1)
             st.session_state.label = label
-            st.rerun()
 
 start_date = st.date_input("開始日期", st.session_state.start_date)
 end_date = st.date_input("結束日期", datetime.date.today())
-run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
 
-# --- 5. 執行分析 ---
+run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
+st.divider()
+
+# --- 5. 數據處理與繪圖 ---
 if run_btn:
     targets = [s.strip() for s in stock_input.replace('，', ',').split(',') if s.strip()]
     if targets:
-        progress_bar = st.progress(0)
-        status_area = st.empty()
-        summary, results = {}, []
-        start_time_exec = time.time()
-        
-        for idx, sid in enumerate(targets):
-            completed = idx + 1
-            avg = (time.time() - start_time_exec) / completed
-            eta = int(avg * (len(targets) - completed))
-            
-            # 使用我們穩定的名稱對照表
-            sname = get_actual_name(sid)
-            
-            status_area.markdown(f"""
-                <div class="status-box">
-                    <b>🔍 查詢條件：</b> {st.session_state.label} ({start_date} ~ {end_date})<br>
-                    <hr>
-                    <b>⚡ 處理進度：</b> [{completed} / {len(targets)}] 正在解析 <b>{sname} ({sid})</b><br>
-                    <b>⏱️ 預估剩餘：</b> {eta} 秒
-                </div>
-            """, unsafe_allow_html=True)
-            
-            df = fetch_finmind_institutional(sid, start_date, end_date)
-            if df is not None and not df.empty:
-                results.append(df)
-                summary[sid] = {"name": sname, "tot": df['total_net'].sum(), "f": df['f_net'].sum(), "it": df['it_net'].sum(), "d": df['d_net'].sum()}
-            progress_bar.progress(completed/len(targets))
-
+        progress_bar = st.progress(0); status_area = st.empty()
+        summary = {t: {'name': t, 'f': 0, 'it': 0, 'd': 0, 'tot': 0} for t in targets}
+        results_list = []
+        for idx, stock in enumerate(targets):
+            status_area.markdown(f'<div class="status-box"><b>⚡ 分析中：{stock}</b></div>', unsafe_allow_html=True)
+            summary[stock]['name'] = get_stock_name(stock)
+            df = fetch_finmind_institutional(stock, start_date, end_date)
+            if df is not None:
+                results_list.append(df)
+                summary[stock]['f'], summary[stock]['it'], summary[stock]['d'], summary[stock]['tot'] = df['f_net'].sum(), df['it_net'].sum(), df['d_net'].sum(), df['total_net'].sum()
+            progress_bar.progress((idx + 1) / len(targets))
         status_area.empty(); progress_bar.empty()
-        if results:
-            st.session_state.full_df, st.session_state.summary, st.session_state.targets = pd.concat(results), summary, targets
-            st.session_state.info = {"start": start_date, "end": end_date, "label": st.session_state.label, "days": pd.concat(results)['date'].nunique()}
-            st.session_state.has_run = True
+        if results_list:
+            st.session_state.full_df, st.session_state.summary, st.session_state.targets, st.session_state.has_run = pd.concat(results_list), summary, targets, True
+            st.session_state.info = {"start": start_date, "end": end_date, "days": pd.concat(results_list)['date'].nunique()}
 
-# --- 6. 渲染圖表與報告 ---
 if st.session_state.get('has_run'):
-    info = st.session_state.info
-    st.success(f"✅ 完成！涵蓋 {info['days']} 個交易日")
-    sel_label = st.radio("切換數據", ["三大法人總和", "外資", "投信", "自營商"], horizontal=True, label_visibility="collapsed")
-    y_col = {"三大法人總和":"total_net", "外資":"f_net", "投信":"it_net", "自營商":"d_net"}[sel_label]
+    metric_options = {"三大法人總和": "total_net", "外資": "f_net", "投信": "it_net", "自營商": "d_net"}
+    selected_label = st.radio("🔄 切換法人", list(metric_options.keys()), horizontal=True, label_visibility="collapsed")
+    y_col = metric_options[selected_label]
     
-    for sid in st.session_state.targets:
-        if sid not in st.session_state.summary: continue
-        sub_df = st.session_state.full_df[st.session_state.full_df['id'] == sid].sort_values('date')
-        name = st.session_state.summary[sid]['name']
-        fig = go.Figure()
-        y_val = sub_df[y_col] / 1000
-        fig.add_trace(go.Bar(x=sub_df['date'], y=y_val, marker_color=['#ef5350' if x>=0 else '#66bb6a' for x in y_val], hovertemplate="日期: %{x}<br>張數: %{y:+.0f} 張<extra></extra>"))
-        fig.update_layout(title=f"【{name} ({sid})】{sel_label} (張)", template="plotly_dark", height=300, margin=dict(l=10, r=10, t=50, b=10), xaxis=dict(tickformat="%m/%d"))
+    for stock in st.session_state.targets:
+        sub_df = st.session_state.full_df[st.session_state.full_df['id'] == stock].sort_values('date')
+        if sub_df.empty: continue
+        fig = go.Figure(go.Bar(x=sub_df['date'], y=sub_df[y_col]/1000, marker_color=['#ef5350' if x>=0 else '#66bb6a' for x in sub_df[y_col]], hovertemplate="張數: %{y:+.0f}張<extra></extra>"))
+        fig.update_layout(title=f"【{st.session_state.summary[stock]['name']}】{selected_label}", template="plotly_dark", height=300, margin=dict(l=10, r=10, t=50, b=10))
         st.plotly_chart(fig, use_container_width=True)
 
-    st.divider()
-    st.subheader("📋 三大法人買賣超總結")
-    report = f"【期間：{info['start']} ~ {info['end']}】\n【區間：{info['label']}】\n【有效交易日：{info['days']} 天】\n"
-    report += "═════════════════════════════════════════════\n\n"
-    for title, key in [("[三大法人總和]", 'tot'), ("[外資]", 'f'), ("[投信]", 'it'), ("[自營商]", 'd')]:
-        report += f"{title}\n"
-        for sid in st.session_state.targets:
-            if sid in st.session_state.summary:
-                s = st.session_state.summary[sid]
-                report += f"{s['name']}: {s[key]//1000:+,} 張\n"
-        report += "\n"
-    st.code(report, language="text")
+    st.subheader("📋 深度會診報告")
+    report = f"期間：{st.session_state.info['start']} ~ {st.session_state.info['end']} ({st.session_state.info['days']}天)\n" + "═"*30 + "\n"
+    for title, key in [("總和", 'tot'), ("外資", 'f'), ("投信", 'it'), ("自營", 'd')]:
+        report += f"[{title}]\n" + "".join([f"{st.session_state.summary[s]['name']}: {st.session_state.summary[s][key]//1000:+,}張\n" for s in st.session_state.targets]) + "\n"
+    st.code(report)
