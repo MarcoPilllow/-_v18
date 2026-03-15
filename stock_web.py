@@ -8,100 +8,34 @@ import urllib3
 import json
 import os
 
-# 1. 環境基礎設定
+# 1. 基礎環境設定
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-st.set_page_config(page_title="三大法人籌碼會診 v18.0", layout="centered")
+st.set_page_config(page_title="三大法人手機診斷版 v18.5", layout="centered")
 
-# 隱藏右上角 UI 殘影與自定義樣式
+# CSS 優化：強制移除右上角選單殘影與美化介面
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     .stApp [data-testid="stToolbar"] {display:none;}
-    .report-text { font-family: 'Consolas', monospace; line-height: 1.2; }
+    .stButton button { width: 100%; padding: 0.3rem; font-size: 14px; border-radius: 5px; }
+    .report-code { font-family: 'Consolas', monospace !important; font-size: 15px !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 股票清單管理 (模擬桌面版 SQLite 邏輯) ---
-LIST_FILE = "stock_lists.json"
-
-def load_lists():
-    if os.path.exists(LIST_FILE):
-        try:
-            with open(LIST_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            return {"航運股": "2603, 2609, 2615"}
-    return {"航運股": "2603, 2609, 2615"}
-
-def save_lists(lists):
-    with open(LIST_FILE, "w", encoding="utf-8") as f:
-        json.dump(lists, f, ensure_ascii=False, indent=4)
-
-# 初始化 session state 中的清單
-if 'custom_lists' not in st.session_state:
-    st.session_state.custom_lists = load_lists()
-
-# --- 3. 側邊欄 UI：清單管理與查詢設定 ---
-with st.sidebar:
-    st.header("📂 股票清單管理")
-    
-    # 選擇現有組合
-    list_names = list(st.session_state.custom_lists.keys())
-    selected_list = st.selectbox("讀取查詢組合", ["請選擇..."] + list_names)
-    
-    # 自動填入邏輯
-    current_val = "2603, 2609, 2615"
-    if selected_list != "請選擇...":
-        current_val = st.session_state.custom_lists[selected_list]
-    
-    # 輸入與儲存功能
-    stock_input = st.text_input("1. 目前查詢股票代號", value=current_val)
-    new_list_name = st.text_input("💾 儲存目前組合名稱", placeholder="例如: 航運三雄")
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("💾 儲存組合", use_container_width=True):
-            if new_list_name and stock_input:
-                st.session_state.custom_lists[new_list_name] = stock_input
-                save_lists(st.session_state.custom_lists)
-                st.success(f"已存: {new_list_name}")
-                st.rerun()
-    with c2:
-        if st.button("❌ 刪除清單", use_container_width=True):
-            if selected_list != "請選擇...":
-                del st.session_state.custom_lists[selected_list]
-                save_lists(st.session_state.custom_lists)
-                st.warning("已刪除")
-                st.rerun()
-
-    st.divider()
-    st.header("🔍 查詢設定")
-    range_option = st.selectbox("快速區間", ["1周", "2周", "1月", "1季", "自定義"])
-    
-    today = datetime.date.today()
-    if range_option == "1周": start_date = today - datetime.timedelta(days=7)
-    elif range_option == "2周": start_date = today - datetime.timedelta(days=14)
-    elif range_option == "1月": start_date = today - datetime.timedelta(days=30)
-    elif range_option == "1季": start_date = today - datetime.timedelta(days=90)
-    else: start_date = st.date_input("開始日期", today - datetime.timedelta(days=14))
-    
-    end_date = st.date_input("結束日期", today)
-    run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
-
-# --- 4. 資料抓取邏輯 (偽裝瀏覽器以免被阻擋) ---
-def fetch_twse_data(date_obj):
-    d_str = date_obj.strftime('%Y%m%d')
-    url = f"https://www.twse.com.tw/fund/T86?response=json&date={d_str}&selectType=ALL"
+# --- 2. 雲端緩存機制 (解決查詢慢的問題) ---
+@st.cache_data(ttl=86400) # 快取 24 小時
+def fetch_twse_cache(date_str):
+    url = f"https://www.twse.com.tw/fund/T86?response=json&date={date_str}&selectType=ALL"
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': 'https://www.twse.com.tw/zh/page/trading/fund/T86.html'
     }
     try:
         resp = requests.get(url, headers=headers, verify=False, timeout=15).json()
         if resp.get('stat') == 'OK' and 'data' in resp:
             df = pd.DataFrame(resp['data'])
-            # 解析欄位
+            # 欄位解析: 0代號, 1名稱, 4外資, 7外資自營, 10投信, 11自營, 18總計
             df = df[[0, 1, 4, 7, 10, 11, 18]]
             df.columns = ['id', 'name', 'f_buy', 'f_trust', 'it_net', 'd_net', 'total_net']
             for col in df.columns[2:]:
@@ -112,27 +46,102 @@ def fetch_twse_data(date_obj):
         return None
     return None
 
-# --- 5. 主視覺顯示 ---
-st.title("📊 三大法人籌碼診斷")
+# --- 3. 股票清單管理 ---
+LIST_FILE = "stock_lists.json"
+def load_lists():
+    if os.path.exists(LIST_FILE):
+        try:
+            with open(LIST_FILE, "r", encoding="utf-8") as f: return json.load(f)
+        except: return {"常用航運": "2603, 2609, 2615"}
+    return {"常用航運": "2603, 2609, 2615"}
+
+def save_lists(lists):
+    with open(LIST_FILE, "w", encoding="utf-8") as f:
+        json.dump(lists, f, ensure_ascii=False, indent=4)
+
+if 'custom_lists' not in st.session_state:
+    st.session_state.custom_lists = load_lists()
+
+# --- 4. 側邊欄 UI ---
+with st.sidebar:
+    st.header("📂 股票清單管理")
+    list_names = list(st.session_state.custom_lists.keys())
+    selected_list = st.selectbox("讀取組合", ["請選擇..."] + list_names)
+    
+    # 自動填入邏輯
+    initial_stocks = "2603, 2609, 2615"
+    if selected_list != "請選擇...":
+        initial_stocks = st.session_state.custom_lists[selected_list]
+    
+    stock_input = st.text_input("1. 目前查詢股票代號", value=initial_stocks)
+    new_list_name = st.text_input("💾 儲存組合名稱", placeholder="例如: 我的最愛")
+    
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        if st.button("💾 儲存"):
+            if new_list_name and stock_input:
+                st.session_state.custom_lists[new_list_name] = stock_input
+                save_lists(st.session_state.custom_lists)
+                st.rerun()
+    with col_s2:
+        if st.button("❌ 刪除"):
+            if selected_list != "請選擇...":
+                del st.session_state.custom_lists[selected_list]
+                save_lists(st.session_state.custom_lists)
+                st.rerun()
+
+    st.divider()
+    st.header("📅 快速區間選擇")
+    
+    # 建立 4x4 按鈕矩陣
+    presets = [
+        [("1天", 1), ("2天", 2), ("3天", 3), ("4天", 4)],
+        [("1周", 7), ("2周", 14), ("3周", 21), ("1月", 30)],
+        [("6周", 42), ("2月", 60), ("1季", 90), ("半年", 182)],
+        [("1年", 365), ("2年", 730), ("3年", 1095), ("5年", 1825)]
+    ]
+    
+    if 'start_date' not in st.session_state:
+        st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=14)
+        st.session_state.label = "自定義"
+
+    for row in presets:
+        cols = st.columns(4)
+        for i, (label, days) in enumerate(row):
+            if cols[i].button(label):
+                st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=days-1)
+                st.session_state.label = label
+
+    st.divider()
+    start_date = st.date_input("開始日期", st.session_state.start_date)
+    end_date = st.date_input("結束日期", datetime.date.today())
+    run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
+
+# --- 5. 主程式邏輯 ---
+st.title("📊 三大法人籌碼會診")
 
 if run_btn:
     targets = [s.strip() for s in stock_input.replace('，', ',').split(',') if s.strip()]
-    date_list = pd.date_range(start_date, end_date)
-    trading_days = [d for d in date_list if d.weekday() < 5]
+    
+    # 過濾週末
+    all_days = pd.date_range(start_date, end_date)
+    trading_days = [d for d in all_days if d.weekday() < 5]
     
     if not trading_days:
-        st.warning("所選區間內無交易日")
+        st.warning("⚠️ 選擇區間無交易日。")
     else:
         all_data = []
         progress_bar = st.progress(0)
         status_text = st.empty()
-        
-        # 匯總數據初始化
         summary = {t: {'name': t, 'f': 0, 'it': 0, 'd': 0, 'tot': 0} for t in targets}
         
         for i, d in enumerate(trading_days):
-            status_text.text(f"🏥 正在掃描日期: {d.strftime('%Y-%m-%d')}")
-            df = fetch_twse_data(d)
+            d_str = d.strftime('%Y%m%d')
+            status_text.text(f"🏥 掃描中: {d.strftime('%Y-%m-%d')} (週末已過濾)")
+            
+            # 使用緩存抓取
+            df = fetch_twse_cache(d_str)
+            
             if df is not None:
                 res = df[df['id'].isin(targets)].copy()
                 for _, row in res.iterrows():
@@ -144,14 +153,15 @@ if run_btn:
                     summary[sid]['tot'] += row['total_net']
                 all_data.append(res.assign(date=d))
             
-            time.sleep(0.4) # 雲端抓取防護間隔
+            # 雲端微延遲以保安全
+            time.sleep(0.05)
             progress_bar.progress((i + 1) / len(trading_days))
 
         if all_data:
             full_df = pd.concat(all_data)
-            status_text.success(f"✅ 完成！已掃描 {len(all_data)} 天數據")
+            status_text.success(f"✅ 分析完成！有效交易日：{len(all_data)} 天")
             
-            # --- 顯示互動圖表 ---
+            # --- 繪圖區 ---
             for stock in targets:
                 sub_df = full_df[full_df['id'] == stock].sort_values('date')
                 if sub_df.empty: continue
@@ -162,7 +172,7 @@ if run_btn:
                     y=sub_df['total_net'] / 1000,
                     marker_color=['#ef5350' if x>=0 else '#66bb6a' for x in sub_df['total_net']],
                     name="張數",
-                    hovertemplate="日期: %{x|%m/%d}<br>張數: %{y:+.0f} 張<extra></extra>"
+                    hovertemplate="日期: %{x|%Y/%m/%d}<br>張數: %{y:+.0f} 張<extra></extra>"
                 ))
                 fig.update_layout(
                     title=f"【{summary[stock]['name']}】三大法人總計 (張)",
@@ -173,31 +183,26 @@ if run_btn:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-            # --- 顯示文字報告 (蕭醫師指定的範例格式) ---
+            # --- 診斷報告區 (蕭醫師指定格式) ---
             st.divider()
             st.subheader("📋 深度會診報告")
             
-            report = f"【期間：{start_date} ~ {end_date}】\n"
-            report += f"【區間：{range_option}】\n"
-            report += f"【有效交易日：{len(all_data)} 天】\n"
-            report += "═" * 45 + "\n\n"
+            r_label = st.session_state.get('label', '自定義')
+            report_text = f"【期間：{start_date} ~ {end_date}】\n"
+            report_text += f"【區間：{r_label}】\n"
+            report_text += f"【有效交易日：{len(all_data)} 天】\n"
+            report_text += "═" * 45 + "\n\n"
             
-            sections = [
-                ("[三大法人總和]", 'tot'),
-                ("[外資]", 'f'),
-                ("[投信]", 'it'),
-                ("[自營商]", 'd')
-            ]
+            sections = [("[三大法人總和]", 'tot'), ("[外資]", 'f'), ("[投信]", 'it'), ("[自營商]", 'd')]
             
             for title, key in sections:
-                report += f"{title}\n"
-                for stock in targets:
-                    val = summary[stock][key] // 1000
-                    name = summary[stock]['name']
-                    report += f"{name}: {val:+,} 張\n"
-                report += "\n"
+                report_text += f"{title}\n"
+                for s in targets:
+                    val = summary[s][key] // 1000
+                    name = summary[s]['name']
+                    report_text += f"{name}: {val:+,} 張\n"
+                report_text += "\n"
             
-            st.code(report, language="text")
-            
+            st.code(report_text, language="text")
         else:
-            st.error("❌ 抓取失敗，請確認證交所狀態或縮短查詢天數。")
+            st.error("❌ 抓取失敗，請確認該日期區間是否正確。")
