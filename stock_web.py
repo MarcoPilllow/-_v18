@@ -9,7 +9,7 @@ import os
 # --- 1. 環境基礎設定 ---
 st.set_page_config(page_title="三大法人籌碼變化", layout="centered")
 
-# CSS 修正：極致緊湊的按鈕排版，與完美的上下日期輸入
+# CSS 修正：終極自適應排版，完美解決 4x4 矩陣與 2x1 按鈕的空間分配
 st.markdown("""
     <style>
     footer {visibility: hidden;}
@@ -29,23 +29,22 @@ st.markdown("""
     /* Toggle 置中 */
     div[role="radiogroup"] { justify-content: center; margin-bottom: 1rem; }
     
-    /* 【關鍵排版修復】極致壓縮手機版的橫向間距 */
+    /* 【神級排版修復】自動等比例縮放欄位，告別裂開的排版 */
     @media (max-width: 768px) {
         div[data-testid="stHorizontalBlock"] {
-            flex-direction: row !important;
-            flex-wrap: nowrap !important;
-            gap: 0.3rem !important; /* 縮小按鈕列之間的空隙 */
+            flex-direction: row !important;  /* 強制水平排列 */
+            flex-wrap: wrap !important;      /* 允許換行 */
+            gap: 6px !important;             /* 極限壓縮間距，緊密但不黏死 */
+            margin-bottom: 4px !important;   /* 壓縮列與列之間的距離 */
         }
-        div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
-            width: auto !important;
-            flex: 1 1 0% !important;
-            min-width: 0 !important;
-            padding: 0 !important; /* 拔除 Streamlit 預設的多餘內邊距 */
+        div[data-testid="column"] {
+            min-width: 20% !important;       /* 確保一行最少能塞下 4 個 */
+            flex: 1 1 0 !important;          /* 魔法屬性：讓欄位自動均分剩餘空間 */
+            padding: 0 !important;           /* 拔除預設內邊距 */
         }
-        /* 微調手機版按鈕內的文字大小與上下空間 */
         .stButton button {
-            padding: 0.2rem !important;
-            font-size: 13px !important;
+            padding: 0.2rem 0 !important;    /* 縮小按鈕內邊距 */
+            font-size: 13px !important;      /* 稍微縮小字體以適應 4 個並排 */
         }
     }
     </style>
@@ -155,7 +154,7 @@ with st.expander("💾 儲存 / 刪除目前清單"):
 # [區塊 2：查詢區間]
 st.subheader("2. 查詢區間")
 
-# 4x4 區間選項矩陣
+# 4x4 區間選項矩陣 (這次絕對不會裂開了)
 presets = [
     [("1天", 1), ("2天", 2), ("3天", 3), ("4天", 4)],
     [("1周", 7), ("2周", 14), ("3周", 21), ("1月", 30)],
@@ -174,7 +173,7 @@ for row in presets:
             st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=days-1)
             st.session_state.label = label
 
-# 【改回上下排列】移除 columns，直接宣告兩個 date_input，手機上就會乖乖上下疊起來
+# 手機端最好閱讀的上下排列輸入框
 start_date = st.date_input("開始日期", st.session_state.start_date)
 end_date = st.date_input("結束日期", datetime.date.today())
 
