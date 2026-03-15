@@ -4,8 +4,8 @@ import pandas as pd
 import datetime
 import plotly.graph_objects as go
 import json
-import os
 import time
+import extra_streamlit_components as stx
 
 # --- 1. 環境基礎設定 ---
 st.set_page_config(page_title="三大法人籌碼變化", layout="centered")
@@ -15,41 +15,33 @@ st.markdown("""
     <style>
     footer {visibility: hidden;}
     
-    /* 狀態框樣式升級 */
     .status-box { 
         background-color: #1e1e1e; 
         padding: 15px; 
         border-radius: 8px; 
         margin-bottom: 10px; 
-        border-left: 5px solid #3b82f6; /* 邊條也改成柔和藍色互相呼應 */
+        border-left: 5px solid #3b82f6; 
         color: #ffffff;
         font-size: 15px;
         line-height: 1.6;
     }
-    .status-box hr {
-        margin: 8px 0;
-        border: none;
-        border-top: 1px solid #444;
-    }
+    .status-box hr { margin: 8px 0; border: none; border-top: 1px solid #444; }
     
-    /* Toggle 置中 */
     div[role="radiogroup"] { justify-content: center; margin-bottom: 1rem; }
     
-    /* 【配色優化】消滅刺眼的預設紅色，改成專業柔和的藍色 */
     button[kind="primary"] {
-        background-color: #3b82f6 !important; /* 柔和海洋藍 */
+        background-color: #3b82f6 !important; 
         border-color: #3b82f6 !important;
         color: white !important;
     }
     button[kind="primary"]:hover {
-        background-color: #2563eb !important; /* 滑鼠懸浮時的深藍色 */
+        background-color: #2563eb !important; 
         border-color: #2563eb !important;
     }
     button[kind="primary"]:focus {
-        box-shadow: 0 0 0 0.2rem rgba(59, 130, 246, 0.5) !important; /* 點擊時的藍色光暈 */
+        box-shadow: 0 0 0 0.2rem rgba(59, 130, 246, 0.5) !important; 
     }
     
-    /* 終極排版鎖定 (無視內部標籤變動) */
     @media (max-width: 768px) {
         [data-testid="stHorizontalBlock"] {
             flex-direction: row !important;
@@ -70,16 +62,14 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 雲端緩存與 FinMind API 策略 ---
+# --- 2. 雲端緩存與 FinMind API ---
 @st.cache_data(ttl=86400)
 def get_stock_name(stock_id):
     try:
         url = f"https://www.twse.com.tw/zh/api/codeQuery?query={stock_id}"
         resp = requests.get(url, timeout=5).json()
-        if resp.get("suggestions"):
-            return resp["suggestions"][0].split("\t")[1]
-    except:
-        pass
+        if resp.get("suggestions"): return resp["suggestions"][0].split("\t")[1]
+    except: pass
     return str(stock_id)
 
 @st.cache_data(ttl=3600)
@@ -96,77 +86,96 @@ def fetch_finmind_institutional(stock_id, start_date, end_date):
         if resp.get('status') == 200 and resp.get('data'):
             df = pd.DataFrame(resp['data'])
             if df.empty: return None
-            
             df['net'] = df['buy'] - df['sell']
-            
             def classify_investor(name):
                 n = str(name).lower()
                 if 'foreign' in n or '外資' in n: return 'f_net'
                 elif 'trust' in n or '投信' in n: return 'it_net'
                 elif 'dealer' in n or '自營' in n: return 'd_net'
                 return 'other'
-                
             df['type'] = df['name'].apply(classify_investor)
             pivot_df = df.pivot_table(index='date', columns='type', values='net', aggfunc='sum').fillna(0)
-            
             for col in ['f_net', 'it_net', 'd_net']:
-                if col not in pivot_df.columns:
-                    pivot_df[col] = 0
-                    
+                if col not in pivot_df.columns: pivot_df[col] = 0
             pivot_df['total_net'] = pivot_df['f_net'] + pivot_df['it_net'] + pivot_df['d_net']
             pivot_df = pivot_df.reset_index()
             pivot_df['id'] = stock_id
             pivot_df['date'] = pd.to_datetime(pivot_df['date']).dt.strftime('%Y-%m-%d')
             return pivot_df
-    except Exception as e:
-        return None
+    except: return None
     return None
 
-# --- 3. 股票清單管理 ---
-LIST_FILE = "stock_lists.json"
-def load_lists():
-    if os.path.exists(LIST_FILE):
-        try:
-            with open(LIST_FILE, "r", encoding="utf-8") as f: return json.load(f)
-        except: return {"常用航運": "2603, 2609, 2615"}
-    return {"常用航運": "2603, 2609, 2615"}
+# --- 3. 股票清單管理 (SaaS 升級版：Cookie 隔離 + 內建概念股) ---
+# 內建黃金概念股 (全域常數，無法被使用者刪除)
+DEFAULT_CONCEPT_STOCKS = {
+    "🔥 熱門：航運三雄": "2603, 2609, 2615",
+    "🤖 趨勢：AI 伺服器": "2382, 3231, 2376, 6669",
+    "🏭 穩健：經典傳產 (塑化/紡織)": "1326, 1402, 2002",
+    "⚡ 政策：重電綠能": "1503, 1513, 1514, 1519",
+    "💰 存股：金融金控": "2881, 2882, 2886, 2891"
+}
 
-def save_lists(lists):
-    with open(LIST_FILE, "w", encoding="utf-8") as f:
-        json.dump(lists, f, ensure_ascii=False, indent=4)
+@st.cache_resource
+def get_cookie_manager():
+    return stx.CookieManager()
 
-if 'custom_lists' not in st.session_state:
-    st.session_state.custom_lists = load_lists()
+cookie_manager = get_cookie_manager()
+
+def load_user_lists():
+    """從使用者的瀏覽器 Cookie 讀取專屬清單"""
+    val = cookie_manager.get(cookie="user_stock_lists")
+    if val and isinstance(val, str):
+        try: return json.loads(val)
+        except: return {}
+    elif val and isinstance(val, dict):
+        return val
+    return {}
+
+def save_user_lists(lists):
+    """將自訂清單寫入使用者的瀏覽器 Cookie"""
+    cookie_manager.set("user_stock_lists", json.dumps(lists), key="save_cookie")
+
+# 獲取目前使用者的自訂清單，並與內建清單合併
+user_custom_lists = load_user_lists()
+all_lists = {**DEFAULT_CONCEPT_STOCKS, **user_custom_lists}
 
 # --- 4. 全新手機版 UI ---
 st.title("📊 三大法人籌碼變化")
 
 # [區塊 1：查詢目標]
 st.subheader("1. 查詢目標")
-list_names = list(st.session_state.custom_lists.keys())
-selected_list = st.selectbox("載入常用清單", ["自訂輸入..."] + list_names)
+list_names = list(all_lists.keys())
+selected_list = st.selectbox("載入組合 (支援內建概念股與您的自訂)", ["自訂輸入..."] + list_names)
 
 initial_stocks = "2603, 2609, 2615"
 if selected_list != "自訂輸入...":
-    initial_stocks = st.session_state.custom_lists[selected_list]
+    initial_stocks = all_lists[selected_list]
 
 stock_input = st.text_input("股票代號 (請用逗號分隔)", value=initial_stocks)
 
-with st.expander("💾 儲存 / 刪除目前清單"):
-    new_list_name = st.text_input("組合名稱", placeholder="例如: 航運三雄")
+with st.expander("💾 儲存 / 刪除專屬清單 (將存於您的瀏覽器)"):
+    new_list_name = st.text_input("組合名稱", placeholder="例如: 我的私房股")
     c1, c2 = st.columns(2)
     with c1:
         if st.button("💾 儲存清單"):
             if new_list_name and stock_input:
-                st.session_state.custom_lists[new_list_name] = stock_input
-                save_lists(st.session_state.custom_lists)
+                user_custom_lists[new_list_name] = stock_input
+                save_user_lists(user_custom_lists)
+                st.success("✅ 已成功存入您的瀏覽器！")
+                time.sleep(0.5)
                 st.rerun()
     with c2:
         if st.button("❌ 刪除清單"):
-            if selected_list != "自訂輸入...":
-                del st.session_state.custom_lists[selected_list]
-                save_lists(st.session_state.custom_lists)
+            if selected_list in user_custom_lists:
+                del user_custom_lists[selected_list]
+                save_user_lists(user_custom_lists)
+                st.success("🗑️ 已從您的瀏覽器刪除！")
+                time.sleep(0.5)
                 st.rerun()
+            elif selected_list in DEFAULT_CONCEPT_STOCKS:
+                st.error("⚠️ 內建概念股無法刪除喔！")
+            else:
+                st.warning("請先選擇要刪除的自訂清單。")
 
 # [區塊 2：查詢區間]
 st.subheader("2. 查詢區間")
@@ -182,7 +191,6 @@ if 'start_date' not in st.session_state:
     st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=14)
     st.session_state.label = "自定義"
 
-# 動態高亮目前選擇的按鈕
 for row in presets:
     cols = st.columns(4)
     for i, (label, days) in enumerate(row):
@@ -194,7 +202,6 @@ for row in presets:
             st.session_state.label = label
             st.rerun()
 
-# 保持上下排列的日期輸入框
 start_date = st.date_input("開始日期", st.session_state.start_date)
 end_date = st.date_input("結束日期", datetime.date.today())
 
