@@ -6,11 +6,11 @@ import plotly.graph_objects as go
 import json
 import time
 import extra_streamlit_components as stx
-from bs4 import BeautifulSoup
 
 # --- 1. 環境基礎設定 ---
 st.set_page_config(page_title="三大法人籌碼變化", layout="centered")
 
+# CSS 修正：優化排版與「按鈕護眼配色」
 st.markdown("""
     <style>
     footer {visibility: hidden;}
@@ -62,7 +62,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 雲端緩存與 API ---
+# --- 2. 雲端緩存與 FinMind API ---
 @st.cache_data(ttl=86400)
 def get_stock_name(stock_id):
     try:
@@ -105,108 +105,45 @@ def fetch_finmind_institutional(stock_id, start_date, end_date):
     except: return None
     return None
 
-# 【更新 1】輕量化動態爆量雷達 (只抓最後一個有效交易日)
-@st.cache_data(ttl=3600)
-def fetch_latest_top20():
-    dynamic_lists = {}
-    today = datetime.date.today()
-    
-    # 往前推算最多 7 天，找到有資料的那天就立刻停止 (避免被鎖)
-    for i in range(7):
-        d = today - datetime.timedelta(days=i)
-        if d.weekday() >= 5: continue # 跳過週末
-        
-        date_str = d.strftime("%Y%m%d")
-        url = f"https://www.twse.com.tw/exchangeReport/MI_INDEX20?response=json&date={date_str}"
-        try:
-            resp = requests.get(url, timeout=5).json()
-            if resp.get("stat") == "OK" and "data" in resp:
-                top20_ids = [str(row[1]) for row in resp["data"]]
-                
-                dynamic_lists[f"🚀 最新 ({d.strftime('%m/%d')})：全市場爆量 Top 20"] = ", ".join(top20_ids)
-                
-                # 產業粗分裝箱
-                tech = [s for s in top20_ids if s.startswith(('23', '24', '3', '5', '6', '8'))]
-                fin = [s for s in top20_ids if s.startswith('28')]
-                ship = [s for s in top20_ids if s.startswith('26')]
-                
-                if tech: dynamic_lists[f"🚀 最新：爆量電子科技"] = ", ".join(tech)
-                if fin: dynamic_lists[f"🚀 最新：爆量金融保險"] = ", ".join(fin)
-                if ship: dynamic_lists[f"🚀 最新：爆量航運業"] = ", ".join(ship)
-                
-                break # 抓到一天就停止！
-        except:
-            continue
-            
-    return dynamic_lists
+# --- 3. 股票清單管理 (SaaS 升級版：Cookie 隔離 + 內建概念股) ---
+DEFAULT_CONCEPT_STOCKS = {
+    "🔥 熱門：航運三雄": "2603, 2609, 2615",
+    "🤖 趨勢：AI 伺服器": "2382, 3231, 2376, 6669",
+    "🏭 穩健：經典傳產 (塑化/紡織)": "1326, 1402, 2002",
+    "⚡ 政策：重電綠能": "1503, 1513, 1514, 1519",
+    "💰 存股：金融金控": "2881, 2882, 2886, 2891"
+}
 
-# 【更新 2】知名財經網站概念股爬蟲 (BeautifulSoup)
-@st.cache_data(ttl=43200) # 快取 12 小時，不用每次都爬
-def scrape_concept_stocks():
-    scraped_lists = {}
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-    }
-    
-    # 這裡示範去抓取公開且防護較低的台股資訊網 (例如 Goodinfo 或 Yahoo 概念股的簡易版邏輯)
-    # 注意：多數財經網站前端由 React 渲染，我們會嘗試抓取標籤或退回備用清單
-    try:
-        # 模擬向某知名財經概念股頁面發送請求
-        # (這裡以 Yahoo 奇摩股市類股首頁為假想目標，實際可用更專門的 API)
-        url = "https://tw.stock.yahoo.com/class/"
-        res = requests.get(url, headers=headers, timeout=8)
-        
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            # 實際爬蟲邏輯會依照網站 DOM 結構變化，這裡做概念性示範提取
-            # 如果成功抓到，我們會放進 scraped_lists
-            # 為了確保你現在馬上能用，我們依然保留高質量的備用清單作為兜底
-            pass 
-            
-    except Exception as e:
-        pass # 爬蟲失敗時靜默處理，直接使用下方備用清單
-
-    # 優雅降級：如果財經網站改版或阻擋爬蟲，自動啟用備用罐頭清單
-    if not scraped_lists:
-        scraped_lists = {
-            "🌐 網摘：AI 伺服器概念": "2382, 3231, 2376, 6669, 2356",
-            "🌐 網摘：矽光子/CPO 概念": "3450, 3163, 3363, 6442, 4979",
-            "🌐 網摘：重電綠能大軍": "1503, 1513, 1514, 1519, 6806",
-            "🌐 網摘：高股息 ETF 成分股": "2603, 3034, 2303, 2891, 2454"
-        }
-        
-    return scraped_lists
-
-# --- 3. 股票清單管理 (SaaS 升級版) ---
+# 【修復重點】改用 session_state 取代 @st.cache_resource，避免 Widget 快取衝突
 if 'cookie_manager' not in st.session_state:
     st.session_state['cookie_manager'] = stx.CookieManager()
 cookie_manager = st.session_state['cookie_manager']
 
 def load_user_lists():
+    """從使用者的瀏覽器 Cookie 讀取專屬清單"""
     val = cookie_manager.get(cookie="user_stock_lists")
     if val and isinstance(val, str):
         try: return json.loads(val)
         except: return {}
-    elif val and isinstance(val, dict): return val
+    elif val and isinstance(val, dict):
+        return val
     return {}
 
 def save_user_lists(lists):
+    """將自訂清單寫入使用者的瀏覽器 Cookie"""
     cookie_manager.set("user_stock_lists", json.dumps(lists), key="save_cookie")
 
-# 獲取動態 Top20、網路爬蟲概念股、使用者自訂
-dynamic_top20 = fetch_latest_top20()
-scraped_concepts = scrape_concept_stocks()
+# 獲取目前使用者的自訂清單，並與內建清單合併
 user_custom_lists = load_user_lists()
-
-# 順序：動態雷達 -> 網摘概念股 -> 個人私房股
-all_lists = {**dynamic_top20, **scraped_concepts, **user_custom_lists}
+all_lists = {**DEFAULT_CONCEPT_STOCKS, **user_custom_lists}
 
 # --- 4. 全新手機版 UI ---
 st.title("📊 三大法人籌碼變化")
 
+# [區塊 1：查詢目標]
 st.subheader("1. 查詢目標")
 list_names = list(all_lists.keys())
-selected_list = st.selectbox("載入組合 (支援最新爆量、網路概念股與自訂)", ["自訂輸入..."] + list_names)
+selected_list = st.selectbox("載入組合 (支援內建概念股與您的自訂)", ["自訂輸入..."] + list_names)
 
 initial_stocks = "2603, 2609, 2615"
 if selected_list != "自訂輸入...":
@@ -233,11 +170,12 @@ with st.expander("💾 儲存 / 刪除專屬清單 (將存於您的瀏覽器)"):
                 st.success("🗑️ 已從您的瀏覽器刪除！")
                 time.sleep(0.5)
                 st.rerun()
-            elif selected_list in scraped_concepts or selected_list in dynamic_top20:
-                st.error("⚠️ 系統抓取的清單無法刪除喔！")
+            elif selected_list in DEFAULT_CONCEPT_STOCKS:
+                st.error("⚠️ 內建概念股無法刪除喔！")
             else:
                 st.warning("請先選擇要刪除的自訂清單。")
 
+# [區塊 2：查詢區間]
 st.subheader("2. 查詢區間")
 
 presets = [
@@ -265,6 +203,7 @@ for row in presets:
 start_date = st.date_input("開始日期", st.session_state.start_date)
 end_date = st.date_input("結束日期", datetime.date.today())
 
+# [區塊 3：執行按鈕]
 run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
 st.divider()
 
@@ -321,4 +260,70 @@ if run_btn:
             actual_trading_days = full_df['date'].nunique()
             
             st.session_state.full_df = full_df
-            st.session_state
+            st.session_state.summary = summary
+            st.session_state.targets = targets
+            st.session_state.analysis_info = {
+                "start": start_date, "end": end_date, 
+                "label": st.session_state.get('label', '自定義'), 
+                "days": actual_trading_days
+            }
+            st.session_state.has_run = True
+        else:
+            st.error("❌ 抓取失敗，區間內可能無資料。")
+            st.session_state.has_run = False
+
+# [區塊 6：圖表與報告渲染]
+if st.session_state.get('has_run', False):
+    info = st.session_state.analysis_info
+    st.success(f"✅ 高效分析完成！共涵蓋 {info['days']} 個有效交易日")
+    
+    metric_options = {
+        "三大法人總和": "total_net",
+        "外資": "f_net",
+        "投信": "it_net",
+        "自營商": "d_net"
+    }
+    
+    selected_label = st.radio(
+        "🔄 切換檢視數據", 
+        list(metric_options.keys()), 
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    y_column = metric_options[selected_label]
+    
+    full_df = st.session_state.full_df
+    summary = st.session_state.summary
+    targets = st.session_state.targets
+
+    for stock in targets:
+        sub_df = full_df[full_df['id'] == stock].sort_values('date')
+        if sub_df.empty: continue
+        fig = go.Figure()
+        
+        y_data = sub_df[y_column] / 1000
+        
+        fig.add_trace(go.Bar(
+            x=sub_df['date'],
+            y=y_data,
+            marker_color=['#ef5350' if x>=0 else '#66bb6a' for x in y_data],
+            name="張數",
+            hovertemplate="日期: %{x}<br>張數: %{y:+.0f} 張<extra></extra>"
+        ))
+        
+        fig.update_layout(
+            title=f"【{summary[stock]['name']}】{selected_label} (張)",
+            template="plotly_dark",
+            margin=dict(l=10, r=10, t=50, b=10), height=300, xaxis=dict(tickformat="%m/%d")
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+    st.subheader("📋 深度會診報告")
+    report = f"【期間：{info['start']} ~ {info['end']}】\n【區間：{info['label']}】\n【有效交易日：{info['days']} 天】\n" + "═"*45 + "\n\n"
+    for title, key in [("[三大法人總和]", 'tot'), ("[外資]", 'f'), ("[投信]", 'it'), ("[自營商]", 'd')]:
+        report += f"{title}\n"
+        for s in targets: 
+            report += f"{summary[s]['name']}: {summary[s][key]//1000:+.0f} 張\n"
+        report += "\n"
+    st.code(report, language="text")
