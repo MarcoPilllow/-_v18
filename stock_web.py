@@ -6,11 +6,17 @@ import plotly.graph_objects as go
 import json
 import time
 import extra_streamlit_components as stx
-from bs4 import BeautifulSoup
-import re
 
-# --- 1. 環境基礎設定 ---
+# --- 1. 環境基礎設定 (網頁預覽設定) ---
 st.set_page_config(page_title="三大法人籌碼變化", page_icon="📊", layout="centered")
+
+st.markdown(f"""
+    <head>
+        <meta property="og:title" content="三大法人籌碼變化">
+        <meta property="og:description" content="台股籌碼即時診斷工具：支援多標籤搜尋、SaaS 隔離儲存與法人買賣超分析。">
+        <meta property="og:type" content="website">
+    </head>
+    """, unsafe_allow_html=True)
 
 st.markdown("""
     <style>
@@ -29,10 +35,11 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. API 函數庫 ---
+# --- 2. 核心 API 函數 ---
+
 @st.cache_data(ttl=86400)
 def search_stock(query):
-    """搜尋證交所 API，格式化為『代碼 名稱』標籤"""
+    """精準搜尋證交所 API，返回『代碼 名稱』格式"""
     query = str(query).strip()
     if not query: return []
     try:
@@ -74,7 +81,7 @@ def fetch_finmind_institutional(stock_id, start_date, end_date):
             return pivot_df
     except: return None
 
-# --- 3. 股票清單與 Cookie 管理 ---
+# --- 3. 股票清單與 Cookie 隔離儲存 ---
 if 'cookie_manager' not in st.session_state:
     st.session_state['cookie_manager'] = stx.CookieManager()
 cookie_manager = st.session_state['cookie_manager']
@@ -88,32 +95,31 @@ def save_user_lists(lists):
 
 user_lists = load_user_lists()
 
-# --- 4. UI 介面 ---
+# --- 4. UI 介面佈局 ---
 st.title("📊 三大法人籌碼變化")
 
 st.subheader("1. 查詢目標")
 selected_list_name = st.selectbox("快速載入常用組合", ["自訂輸入..."] + list(user_lists.keys()))
 
-# 設定預設值
+# 初始預設股票
 default_stocks = ["2603 長榮", "2609 陽明", "2615 萬海"]
 if selected_list_name != "自訂輸入...":
     default_stocks = user_lists[selected_list_name].split(",")
 
-# 搜尋輸入框
-search_query = st.text_input("🔍 搜尋並新增股票 (例如：2330 或 台積電)", key="stock_search")
+# 多標籤搜尋功能 (Tag 化)
+search_query = st.text_input("🔍 搜尋並新增股票 (輸入代碼或名稱)", key="stock_search")
 options = []
 if search_query:
     options = search_stock(search_query)
 
-# 多選 Tag 清單
 final_selection = st.multiselect(
     "目前已選清單 (可手動刪除或從上方搜尋新增)",
     options=list(set(default_stocks + options)),
     default=default_stocks
 )
 
-with st.expander("💾 儲存目前清單到瀏覽器"):
-    new_name = st.text_input("組合名稱", placeholder="例如: 航運小分隊")
+with st.expander("💾 儲存目前清單到瀏覽器 (他人無法看見)"):
+    new_name = st.text_input("組合名稱", placeholder="例如: 我的定存股")
     if st.button("💾 儲存清單"):
         if new_name and final_selection:
             user_lists[new_name] = ",".join(final_selection)
@@ -121,13 +127,13 @@ with st.expander("💾 儲存目前清單到瀏覽器"):
             st.success("✅ 已儲存！"); time.sleep(0.5); st.rerun()
 
 st.subheader("2. 查詢區間")
-# [區間選擇按鈕保持不變]
 presets = [[("1天",1),("2天",2),("3天",3),("4天",4)],[("1周",7),("2周",14),("3周",21),("1月",30)]]
 if 'start_date' not in st.session_state: st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=14); st.session_state.label = "2周"
 for row in presets:
     cols = st.columns(4)
     for i, (label, days) in enumerate(row):
-        if cols[i].button(label, type="primary" if st.session_state.label==label else "secondary", use_container_width=True):
+        is_active = (st.session_state.label == label)
+        if cols[i].button(label, type="primary" if is_active else "secondary", use_container_width=True):
             st.session_state.start_date, st.session_state.label = datetime.date.today() - datetime.timedelta(days=days-1), label
             st.rerun()
 
@@ -137,7 +143,7 @@ end_date = st.date_input("結束日期", datetime.date.today())
 run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
 st.divider()
 
-# --- 5. 數據分析與繪圖 ---
+# --- 5. 數據處理與繪圖 ---
 if run_btn:
     if not final_selection:
         st.warning("⚠️ 請至少選擇一檔股票。")
@@ -147,7 +153,7 @@ if run_btn:
         final_results = []
         
         for idx, item in enumerate(final_selection):
-            # 重要：解析 Tag。item 為 "2615 萬海"，拆成 "2615" 與 "萬海"
+            # 分離代碼與名稱，防止顯示重複代碼
             parts = item.split(" ")
             sid = parts[0]
             sname = parts[1] if len(parts) > 1 else sid
@@ -165,6 +171,8 @@ if run_btn:
             st.session_state.results = final_results
             st.session_state.analysis_info = {"start": start_date, "end": end_date}
             st.session_state.has_run = True
+        else:
+            st.error("❌ 抓取失敗，區間內可能無資料。")
 
 if st.session_state.get('has_run'):
     sel_label = st.radio("🔄 切換檢視", ["三大法人總和", "外資", "投信", "自營商"], horizontal=True, label_visibility="collapsed")
@@ -179,7 +187,7 @@ if st.session_state.get('has_run'):
             marker_color=['#ef5350' if x>=0 else '#66bb6a' for x in y_val],
             hovertemplate="日期: %{x}<br>張數: %{y:+.0f} 張<extra></extra>"
         ))
-        # 【修正顯示】res['id'] 是 2615，res['name'] 是 萬海。標題組合漂亮且不重複
+        # 標題顯示：【代號 中文名稱】
         fig.update_layout(
             title=f"【{res['id']} {res['name']}】{sel_label} (張)", 
             template="plotly_dark", height=300, margin=dict(l=10, r=10, t=50, b=10),
@@ -187,10 +195,9 @@ if st.session_state.get('has_run'):
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    # 文字報告區也同步修正
+    # 會診摘要區
     report = f"【期間：{st.session_state.analysis_info['start']} ~ {st.session_state.analysis_info['end']}】\n" + "="*35 + "\n"
     for res in st.session_state.results:
-        # 計算總買賣超
         total_val = res["df"][y_col].sum() / 1000
-        report += f"{res['id']} {res['name']}: {total_val:+, .0f} 張\n"
+        report += f"{res['id']} {res['name']}: {total_val:+.0f} 張\n"
     st.code(report, language="text")
