@@ -10,16 +10,12 @@ from bs4 import BeautifulSoup
 import re
 
 # --- 1. 環境基礎設定 ---
-st.set_page_config(
-    page_title="三大法人籌碼變化",
-    page_icon="📊",
-    layout="centered"
-)
+st.set_page_config(page_title="三大法人籌碼變化", page_icon="📊", layout="centered")
 
 st.markdown(f"""
     <head>
         <meta property="og:title" content="三大法人籌碼變化">
-        <meta property="og:description" content="台股籌碼即時診斷工具：支援中文名稱搜尋、動態爆量雷達與法人買賣超分析。">
+        <meta property="og:description" content="台股籌碼即時診斷工具：已修正中文名稱顯示，支援動態爆量雷達。">
         <meta property="og:type" content="website">
     </head>
     """, unsafe_allow_html=True)
@@ -46,11 +42,8 @@ st.markdown("""
 
 @st.cache_data(ttl=86400)
 def get_stock_info(query):
-    """
-    支援『代碼』或『中文名稱』轉換。
-    輸入 2330 -> 回傳 (2330, 台積電)
-    輸入 台積電 -> 回傳 (2330, 台積電)
-    """
+    """精準抓取代碼與名稱，防止重複顯示代碼"""
+    query = str(query).strip().split(' ')[0] # 只取空格前的代碼部分，防止傳入已格式化的字串
     try:
         url = f"https://www.twse.com.tw/zh/api/codeQuery?query={query}"
         resp = requests.get(url, timeout=5).json()
@@ -61,12 +54,16 @@ def get_stock_info(query):
     return query, query
 
 def process_input_targets(input_str):
-    """處理原始輸入字串，將中文或代碼統一轉為 (代碼, 名稱) 清單"""
-    raw_list = [s.strip() for s in input_str.replace('，', ',').split(',') if s.strip()]
+    """解析使用者輸入，確保產出唯一的 (代碼, 名稱) 對象清單"""
+    # 處理全角逗號並分割
+    raw_items = [s.strip() for s in input_str.replace('，', ',').split(',') if s.strip()]
+    seen_ids = set()
     processed = []
-    for item in raw_list:
+    for item in raw_items:
         sid, sname = get_stock_info(item)
-        processed.append({"id": sid, "name": sname})
+        if sid not in seen_ids:
+            seen_ids.add(sid)
+            processed.append({"id": sid, "name": sname})
     return processed
 
 @st.cache_data(ttl=3600)
@@ -111,7 +108,7 @@ def fetch_latest_top20():
         try:
             resp = requests.get(url, timeout=5).json()
             if resp.get("stat") == "OK" and "data" in resp:
-                # 這裡抓取代碼與名稱
+                # 這裡抓取代碼與名稱格式為 '代碼 名稱'
                 items = [f"{row[1]} {row[2]}" for row in resp["data"]]
                 dynamic[f"🚀 最新 ({d.strftime('%m/%d')})：爆量排行榜"] = ", ".join(items)
                 break
@@ -132,7 +129,6 @@ def scrape_concept_stocks():
             if not link.startswith('http'): link = "https://tw.stock.yahoo.com" + link
             sub_res = requests.get(link, headers=headers, timeout=10)
             sub_soup = BeautifulSoup(sub_res.text, 'html.parser')
-            # 抓取名稱與代號
             stock_rows = sub_soup.select('div[class*="D(f)"] div[class*="Lh(20px)"]')
             stocks = []
             for row in stock_rows:
@@ -146,7 +142,7 @@ def scrape_concept_stocks():
         scraped = {"🌐 網摘：AI 伺服器": "2382 廣達, 3231 緯創, 2376 技嘉", "🌐 網摘：航運三雄": "2603 長榮, 2609 陽明, 2615 萬海"}
     return scraped
 
-# --- 3. 股票清單與 Cookie 隔離管理 ---
+# --- 3. 股票清單與 Cookie 管理 ---
 if 'cookie_manager' not in st.session_state:
     st.session_state['cookie_manager'] = stx.CookieManager()
 cookie_manager = st.session_state['cookie_manager']
@@ -168,7 +164,7 @@ st.title("📊 三大法人籌碼變化")
 
 st.subheader("1. 查詢目標")
 selected_list = st.selectbox("載入組合 (支援中文名稱與代碼)", ["自訂輸入..."] + list(all_lists.keys()))
-initial_stocks = all_lists[selected_list] if selected_list != "自訂輸入..." else "2603, 2609, 2615"
+initial_stocks = all_lists[selected_list] if selected_list != "自訂輸入..." else "2603 長榮, 2609 陽明, 2615 萬海"
 stock_input = st.text_input("輸入股票代碼或名稱 (例如：台積電, 2603)", value=initial_stocks)
 
 with st.expander("💾 儲存 / 刪除您的私房清單"):
@@ -188,13 +184,13 @@ with st.expander("💾 儲存 / 刪除您的私房清單"):
                 st.success("🗑️ 已刪除！"); time.sleep(0.5); st.rerun()
 
 st.subheader("2. 查詢區間")
-# [快速區間按鈕邏輯略，維持原樣]
 presets = [[("1天",1),("2天",2),("3天",3),("4天",4)],[("1周",7),("2周",14),("3周",21),("1月",30)],[("6周",42),("2月",60),("1季",90),("半年",182)]]
 if 'start_date' not in st.session_state: st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=14); st.session_state.label = "2周"
 for row in presets:
     cols = st.columns(4)
     for i, (label, days) in enumerate(row):
-        if cols[i].button(label, type="primary" if st.session_state.label==label else "secondary", use_container_width=True):
+        is_active = (st.session_state.label == label)
+        if cols[i].button(label, type="primary" if is_active else "secondary", use_container_width=True):
             st.session_state.start_date, st.session_state.label = datetime.date.today() - datetime.timedelta(days=days-1), label
             st.rerun()
 
@@ -242,6 +238,7 @@ if run_btn:
 
 if st.session_state.get('has_run'):
     info = st.session_state.analysis_info
+    st.success(f"✅ 高效分析完成！共涵蓋 {info['days']} 個有效交易日")
     sel_label = st.radio("切換檢視", ["三大法人總和", "外資", "投信", "自營商"], horizontal=True, label_visibility="collapsed")
     y_col = {"三大法人總和":"total_net", "外資":"f_net", "投信":"it_net", "自營商":"d_net"}[sel_label]
     
@@ -252,11 +249,12 @@ if st.session_state.get('has_run'):
         fig = go.Figure()
         y_val = sub_df[y_col] / 1000
         fig.add_trace(go.Bar(x=sub_df['date'], y=y_val, marker_color=['#ef5350' if x>=0 else '#66bb6a' for x in y_val], hovertemplate="日期: %{x}<br>張數: %{y:+.0f} 張<extra></extra>"))
-        # 圖表標題自動帶入名稱
+        
+        # 【關鍵修正】標題顯示：【代號 名稱】
         fig.update_layout(title=f"【{sid} {st.session_state.summary[sid]['name']}】{sel_label} (張)", template="plotly_dark", height=300, margin=dict(l=10, r=10, t=50, b=10))
         st.plotly_chart(fig, use_container_width=True)
 
-    # 報告摘要也帶入名稱
+    # 【關鍵修正】報告摘要顯示中文名稱
     report = f"【期間：{info['start']} ~ {info['end']}】\n有效交易日：{info['days']} 天\n" + "="*30 + "\n"
     for t_obj in st.session_state.targets:
         sid = t_obj["id"]
