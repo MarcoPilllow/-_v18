@@ -19,7 +19,6 @@ st.markdown("""
         background-color: #1e1e1e; padding: 15px; border-radius: 8px; margin-bottom: 10px; 
         border-left: 5px solid #3b82f6; color: #ffffff; font-size: 15px;
     }
-    /* 讓 multiselect 的標籤更顯眼 */
     .stMultiSelect span { color: white !important; }
     div[role="radiogroup"] { justify-content: center; margin-bottom: 1rem; }
     button[kind="primary"] { background-color: #3b82f6 !important; color: white !important; }
@@ -31,17 +30,15 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- 2. API 函數庫 ---
-
 @st.cache_data(ttl=86400)
 def search_stock(query):
-    """搜尋證交所 API，返回『代碼 名稱』格式字串"""
+    """搜尋證交所 API，格式化為『代碼 名稱』標籤"""
     query = str(query).strip()
     if not query: return []
     try:
         url = f"https://www.twse.com.tw/zh/api/codeQuery?query={query}"
         resp = requests.get(url, timeout=5).json()
         if resp.get("suggestions") and resp["suggestions"][0] != "No Data Found":
-            # 格式化為 "2615 萬海"
             return [s.replace("\t", " ") for s in resp["suggestions"]]
     except: pass
     return []
@@ -97,19 +94,18 @@ st.title("📊 三大法人籌碼變化")
 st.subheader("1. 查詢目標")
 selected_list_name = st.selectbox("快速載入常用組合", ["自訂輸入..."] + list(user_lists.keys()))
 
-# 預設顯示的股票標籤
+# 設定預設值
 default_stocks = ["2603 長榮", "2609 陽明", "2615 萬海"]
 if selected_list_name != "自訂輸入...":
     default_stocks = user_lists[selected_list_name].split(",")
 
-# 【核心功能：Tag 化搜尋】
-# 使用 multiselect 並結合動態搜尋建議
-search_query = st.text_input("🔍 搜尋並新增股票 (輸入代碼或名稱，如：台積電)", key="stock_search")
+# 搜尋輸入框
+search_query = st.text_input("🔍 搜尋並新增股票 (例如：2330 或 台積電)", key="stock_search")
 options = []
 if search_query:
     options = search_stock(search_query)
 
-# 最終選擇的股票會以 Tag 形式呈現
+# 多選 Tag 清單
 final_selection = st.multiselect(
     "目前已選清單 (可手動刪除或從上方搜尋新增)",
     options=list(set(default_stocks + options)),
@@ -125,6 +121,7 @@ with st.expander("💾 儲存目前清單到瀏覽器"):
             st.success("✅ 已儲存！"); time.sleep(0.5); st.rerun()
 
 st.subheader("2. 查詢區間")
+# [區間選擇按鈕保持不變]
 presets = [[("1天",1),("2天",2),("3天",3),("4天",4)],[("1周",7),("2周",14),("3周",21),("1月",30)]]
 if 'start_date' not in st.session_state: st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=14); st.session_state.label = "2周"
 for row in presets:
@@ -140,7 +137,7 @@ end_date = st.date_input("結束日期", datetime.date.today())
 run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
 st.divider()
 
-# --- 5. 數據分析與視覺化 ---
+# --- 5. 數據分析與繪圖 ---
 if run_btn:
     if not final_selection:
         st.warning("⚠️ 請至少選擇一檔股票。")
@@ -150,7 +147,7 @@ if run_btn:
         final_results = []
         
         for idx, item in enumerate(final_selection):
-            # item 格式為 "2615 萬海"
+            # 重要：解析 Tag。item 為 "2615 萬海"，拆成 "2615" 與 "萬海"
             parts = item.split(" ")
             sid = parts[0]
             sname = parts[1] if len(parts) > 1 else sid
@@ -182,16 +179,18 @@ if st.session_state.get('has_run'):
             marker_color=['#ef5350' if x>=0 else '#66bb6a' for x in y_val],
             hovertemplate="日期: %{x}<br>張數: %{y:+.0f} 張<extra></extra>"
         ))
-        # 【修正顯示】標題現在只會顯示一個代碼 + 中文名稱
+        # 【修正顯示】res['id'] 是 2615，res['name'] 是 萬海。標題組合漂亮且不重複
         fig.update_layout(
             title=f"【{res['id']} {res['name']}】{sel_label} (張)", 
-            template="plotly_dark", height=300, margin=dict(l=10, r=10, t=50, b=10)
+            template="plotly_dark", height=300, margin=dict(l=10, r=10, t=50, b=10),
+            xaxis=dict(tickformat="%m/%d")
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    # 報告區
-    report = f"【分析期間：{st.session_state.analysis_info['start']} ~ {st.session_state.analysis_info['end']}】\n" + "="*35 + "\n"
+    # 文字報告區也同步修正
+    report = f"【期間：{st.session_state.analysis_info['start']} ~ {st.session_state.analysis_info['end']}】\n" + "="*35 + "\n"
     for res in st.session_state.results:
-        val = res["df"][y_col].sum() / 1000
-        report += f"{res['id']} {res['name']}: {val:+, .0f} 張\n"
+        # 計算總買賣超
+        total_val = res["df"][y_col].sum() / 1000
+        report += f"{res['id']} {res['name']}: {total_val:+, .0f} 張\n"
     st.code(report, language="text")
