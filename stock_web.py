@@ -10,18 +10,18 @@ import time
 # --- 1. 環境基礎設定 ---
 st.set_page_config(page_title="三大法人籌碼變化", layout="centered")
 
-# CSS 修正：暴力破解 Streamlit 手機版換行限制與美化狀態框
+# CSS 修正：優化排版與「按鈕護眼配色」
 st.markdown("""
     <style>
     footer {visibility: hidden;}
     
-    /* 狀態框樣式升級：加入更清楚的層次 */
+    /* 狀態框樣式升級 */
     .status-box { 
         background-color: #1e1e1e; 
         padding: 15px; 
         border-radius: 8px; 
         margin-bottom: 10px; 
-        border-left: 5px solid #ff4b4b; /* 改用醒目的紅色邊條 */
+        border-left: 5px solid #3b82f6; /* 邊條也改成柔和藍色互相呼應 */
         color: #ffffff;
         font-size: 15px;
         line-height: 1.6;
@@ -35,7 +35,21 @@ st.markdown("""
     /* Toggle 置中 */
     div[role="radiogroup"] { justify-content: center; margin-bottom: 1rem; }
     
-    /* 【終極排版鎖定】無視內部標籤變動，強制水平等分 */
+    /* 【配色優化】消滅刺眼的預設紅色，改成專業柔和的藍色 */
+    button[kind="primary"] {
+        background-color: #3b82f6 !important; /* 柔和海洋藍 */
+        border-color: #3b82f6 !important;
+        color: white !important;
+    }
+    button[kind="primary"]:hover {
+        background-color: #2563eb !important; /* 滑鼠懸浮時的深藍色 */
+        border-color: #2563eb !important;
+    }
+    button[kind="primary"]:focus {
+        box-shadow: 0 0 0 0.2rem rgba(59, 130, 246, 0.5) !important; /* 點擊時的藍色光暈 */
+    }
+    
+    /* 終極排版鎖定 (無視內部標籤變動) */
     @media (max-width: 768px) {
         [data-testid="stHorizontalBlock"] {
             flex-direction: row !important;
@@ -168,18 +182,17 @@ if 'start_date' not in st.session_state:
     st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=14)
     st.session_state.label = "自定義"
 
-# 【重點更新】動態高亮目前選擇的按鈕
+# 動態高亮目前選擇的按鈕
 for row in presets:
     cols = st.columns(4)
     for i, (label, days) in enumerate(row):
-        # 如果該按鈕是目前選中的 label，就設為 primary (亮色)
         is_active = (st.session_state.get('label') == label)
         btn_type = "primary" if is_active else "secondary"
         
         if cols[i].button(label, type=btn_type, use_container_width=True):
             st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=days-1)
             st.session_state.label = label
-            st.rerun() # 強制刷新畫面，讓按鈕顏色瞬間改變
+            st.rerun()
 
 # 保持上下排列的日期輸入框
 start_date = st.date_input("開始日期", st.session_state.start_date)
@@ -208,12 +221,10 @@ if run_btn:
         for idx, stock in enumerate(targets):
             completed = idx + 1
             
-            # 【重點更新】計算 ETA (預估剩餘時間)
             elapsed = time.time() - start_time_exec
             avg_time_per_task = elapsed / completed if completed > 0 else 0
             eta_seconds = int(avg_time_per_task * (total_tasks - completed))
             
-            # 【重點更新】詳細的查詢條件與進度面板
             status_area.markdown(f"""
                 <div class="status-box">
                     <b>🔍 查詢條件：</b> {st.session_state.get('label', '自定義')} ({start_date.strftime('%m/%d')} ~ {end_date.strftime('%m/%d')})<br>
