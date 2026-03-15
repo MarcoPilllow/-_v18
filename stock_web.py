@@ -9,11 +9,10 @@ import os
 # --- 1. 環境基礎設定 ---
 st.set_page_config(page_title="三大法人籌碼變化", layout="centered")
 
+# CSS 修正：移除會干擾手機版頂部選單的隱藏語法
 st.markdown("""
     <style>
-    #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    .stApp [data-testid="stToolbar"] {display:none;}
     .stButton button { width: 100%; padding: 0.3rem; font-size: 14px; border-radius: 5px; }
     .status-box { 
         background-color: #1e1e1e; 
@@ -57,10 +56,8 @@ def fetch_finmind_institutional(stock_id, start_date, end_date):
             df = pd.DataFrame(resp['data'])
             if df.empty: return None
             
-            # 計算淨買賣超 (FinMind 的數據單位為「股」)
             df['net'] = df['buy'] - df['sell']
             
-            # FinMind 回傳的是英文名稱 (Foreign_Investor, Investment_Trust, Dealer)
             def classify_investor(name):
                 n = str(name).lower()
                 if 'foreign' in n or '外資' in n: return 'f_net'
@@ -69,11 +66,8 @@ def fetch_finmind_institutional(stock_id, start_date, end_date):
                 return 'other'
                 
             df['type'] = df['name'].apply(classify_investor)
-            
-            # 以日期分組，將不同法人的 net 加總
             pivot_df = df.pivot_table(index='date', columns='type', values='net', aggfunc='sum').fillna(0)
             
-            # 確保欄位都存在，避免報錯
             for col in ['f_net', 'it_net', 'd_net']:
                 if col not in pivot_df.columns:
                     pivot_df[col] = 0
@@ -81,8 +75,6 @@ def fetch_finmind_institutional(stock_id, start_date, end_date):
             pivot_df['total_net'] = pivot_df['f_net'] + pivot_df['it_net'] + pivot_df['d_net']
             pivot_df = pivot_df.reset_index()
             pivot_df['id'] = stock_id
-            
-            # 轉換日期格式以便與 Plotly 相容
             pivot_df['date'] = pd.to_datetime(pivot_df['date']).dt.strftime('%Y-%m-%d')
             return pivot_df
     except Exception as e:
@@ -105,59 +97,65 @@ def save_lists(lists):
 if 'custom_lists' not in st.session_state:
     st.session_state.custom_lists = load_lists()
 
-# --- 4. 側邊欄 UI ---
-with st.sidebar:
-    st.header("📂 股票清單管理")
-    list_names = list(st.session_state.custom_lists.keys())
-    selected_list = st.selectbox("讀取組合", ["請選擇..."] + list_names)
-    
-    initial_stocks = "2603, 2609, 2615"
-    if selected_list != "請選擇...":
-        initial_stocks = st.session_state.custom_lists[selected_list]
-    
-    stock_input = st.text_input("1. 目前查詢股票代號", value=initial_stocks)
-    new_list_name = st.text_input("💾 儲存組合名稱", placeholder="例如: 航運三雄")
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("💾 儲存"):
-            if new_list_name and stock_input:
-                st.session_state.custom_lists[new_list_name] = stock_input
-                save_lists(st.session_state.custom_lists); st.rerun()
-    with c2:
-        if st.button("❌ 刪除"):
-            if selected_list != "請選擇...":
-                del st.session_state.custom_lists[selected_list]
-                save_lists(st.session_state.custom_lists); st.rerun()
-
-    st.divider()
-    st.header("📅 快速區間選擇")
-    presets = [
-        [("1天", 1), ("2天", 2), ("3天", 3), ("4天", 4)],
-        [("1周", 7), ("2周", 14), ("3周", 21), ("1月", 30)],
-        [("6周", 42), ("2月", 60), ("1季", 90), ("半年", 182)],
-        [("1年", 365), ("2年", 730), ("3年", 1095), ("5年", 1825)]
-    ]
-    
-    if 'start_date' not in st.session_state:
-        st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=14)
-        st.session_state.label = "自定義"
-
-    for row in presets:
-        cols = st.columns(4)
-        for i, (label, days) in enumerate(row):
-            if cols[i].button(label):
-                st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=days-1)
-                st.session_state.label = label
-
-    st.divider()
-    start_date = st.date_input("開始日期", st.session_state.start_date)
-    end_date = st.date_input("結束日期", datetime.date.today())
-    run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
-
-# --- 5. 主視覺顯示與高效數據處理 ---
+# --- 4. 全新手機版 UI (無側邊欄設計) ---
 st.title("📊 三大法人籌碼變化")
 
+# [區塊 1：查詢目標]
+st.subheader("1. 查詢目標")
+list_names = list(st.session_state.custom_lists.keys())
+selected_list = st.selectbox("載入常用清單", ["自訂輸入..."] + list_names)
+
+initial_stocks = "2603, 2609, 2615"
+if selected_list != "自訂輸入...":
+    initial_stocks = st.session_state.custom_lists[selected_list]
+
+stock_input = st.text_input("股票代號 (請用逗號分隔)", value=initial_stocks)
+
+with st.expander("💾 儲存 / 刪除目前清單"):
+    new_list_name = st.text_input("組合名稱", placeholder="例如: 航運三雄")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("💾 儲存清單"):
+            if new_list_name and stock_input:
+                st.session_state.custom_lists[new_list_name] = stock_input
+                save_lists(st.session_state.custom_lists)
+                st.rerun()
+    with c2:
+        if st.button("❌ 刪除清單"):
+            if selected_list != "自訂輸入...":
+                del st.session_state.custom_lists[selected_list]
+                save_lists(st.session_state.custom_lists)
+                st.rerun()
+
+# [區塊 2：查詢區間]
+st.subheader("2. 查詢區間")
+presets = [
+    [("1周", 7), ("2周", 14), ("3周", 21), ("1月", 30)],
+    [("2月", 60), ("1季", 90), ("半年", 182), ("1年", 365)]
+]
+
+if 'start_date' not in st.session_state:
+    st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=14)
+    st.session_state.label = "自定義"
+
+for row in presets:
+    cols = st.columns(4)
+    for i, (label, days) in enumerate(row):
+        if cols[i].button(label):
+            st.session_state.start_date = datetime.date.today() - datetime.timedelta(days=days-1)
+            st.session_state.label = label
+
+c_start, c_end = st.columns(2)
+with c_start:
+    start_date = st.date_input("開始日期", st.session_state.start_date)
+with c_end:
+    end_date = st.date_input("結束日期", datetime.date.today())
+
+# [區塊 3：執行按鈕]
+run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
+st.divider()
+
+# --- 5. 數據分析與視覺化 ---
 if run_btn:
     targets = [s.strip() for s in stock_input.replace('，', ',').split(',') if s.strip()]
     
@@ -211,7 +209,7 @@ if run_btn:
             st.error("❌ 抓取失敗，區間內可能無資料。")
             st.session_state.has_run = False
 
-# === 6. 圖表 Toggle 與 報告渲染 ===
+# [區塊 6：圖表與報告渲染]
 if st.session_state.get('has_run', False):
     info = st.session_state.analysis_info
     st.success(f"✅ 高效分析完成！共涵蓋 {info['days']} 個有效交易日")
@@ -240,7 +238,6 @@ if st.session_state.get('has_run', False):
         if sub_df.empty: continue
         fig = go.Figure()
         
-        # 轉換回「張」數 (FinMind預設是股)
         y_data = sub_df[y_column] / 1000
         
         fig.add_trace(go.Bar(
