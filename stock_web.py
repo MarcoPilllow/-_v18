@@ -3,10 +3,12 @@ import requests
 import pandas as pd
 import datetime
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import json
 import time
 import extra_streamlit_components as stx
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- 1. 環境基礎設定 ---
 st.set_page_config(page_title="三大法人籌碼變化", layout="centered")
@@ -105,64 +107,82 @@ def fetch_finmind_institutional(stock_id, start_date, end_date):
     except: return None
     return None
 
-# 【更新 1】輕量化動態爆量雷達 (只抓最後一個有效交易日)
+# 【全新加入】抓取成交量與融資券餘額 (FinMind)
+@st.cache_data(ttl=3600)
+def fetch_finmind_secondary(stock_id, start_date, end_date):
+    sd_str = start_date.strftime("%Y-%m-%d")
+    ed_str = end_date.strftime("%Y-%m-%d")
+    url = "https://api.finmindtrade.com/api/v4/data"
+    
+    try:
+        # 1. 抓取成交量
+        res_p = requests.get(url, params={"dataset": "TaiwanStockPrice", "data_id": str(stock_id), "start_date": sd_str, "end_date": ed_str}, timeout=10).json()
+        df_p = pd.DataFrame(res_p.get('data', []))
+        
+        # 2. 抓取融資融券
+        res_m = requests.get(url, params={"dataset": "TaiwanStockMarginPurchaseShortSale", "data_id": str(stock_id), "start_date": sd_str, "end_date": ed_str}, timeout=10).json()
+        df_m = pd.DataFrame(res_m.get('data', []))
+
+        df_merged = pd.DataFrame()
+        
+        if not df_p.empty:
+            df_p['Volume'] = df_p['Trading_Volume'] / 1000 # 換算成張
+            df_merged = df_p[['date', 'Volume']]
+            
+        if not df_m.empty:
+            df_m['Margin_Bal'] = df_m['MarginPurchaseTodayBalance'] / 1000 # 融資餘額(張)
+            df_m['Short_Bal'] = df_m['ShortSaleTodayBalance'] / 1000 # 融券餘額(張)
+            df_m_sub = df_m[['date', 'Margin_Bal', 'Short_Bal']]
+            
+            if df_merged.empty:
+                df_merged = df_m_sub
+            else:
+                df_merged = pd.merge(df_merged, df_m_sub, on='date', how='outer')
+                
+        if not df_merged.empty:
+            df_merged['date'] = pd.to_datetime(df_merged['date']).dt.strftime('%Y-%m-%d')
+            df_merged['id'] = stock_id
+            return df_merged
+            
+    except: return None
+    return None
+
 @st.cache_data(ttl=3600)
 def fetch_latest_top20():
     dynamic_lists = {}
     today = datetime.date.today()
-    
-    # 往前推算最多 7 天，找到有資料的那天就立刻停止 (避免被鎖)
     for i in range(7):
         d = today - datetime.timedelta(days=i)
-        if d.weekday() >= 5: continue # 跳過週末
-        
+        if d.weekday() >= 5: continue
         date_str = d.strftime("%Y%m%d")
         url = f"https://www.twse.com.tw/exchangeReport/MI_INDEX20?response=json&date={date_str}"
         try:
             resp = requests.get(url, timeout=5).json()
             if resp.get("stat") == "OK" and "data" in resp:
                 top20_ids = [str(row[1]) for row in resp["data"]]
-                
                 dynamic_lists[f"🚀 最新 ({d.strftime('%m/%d')})：全市場爆量 Top 20"] = ", ".join(top20_ids)
-                
-                # 產業粗分裝箱
                 tech = [s for s in top20_ids if s.startswith(('23', '24', '3', '5', '6', '8'))]
                 fin = [s for s in top20_ids if s.startswith('28')]
                 ship = [s for s in top20_ids if s.startswith('26')]
-                
                 if tech: dynamic_lists[f"🚀 最新：爆量電子科技"] = ", ".join(tech)
                 if fin: dynamic_lists[f"🚀 最新：爆量金融保險"] = ", ".join(fin)
                 if ship: dynamic_lists[f"🚀 最新：爆量航運業"] = ", ".join(ship)
-                
-                break # 抓到一天就停止！
-        except:
-            continue
-            
+                break
+        except: continue
     return dynamic_lists
 
-# 【更新 2】知名財經網站概念股爬蟲 (BeautifulSoup)
-@st.cache_data(ttl=43200) # 快取 12 小時，不用每次都爬
+@st.cache_data(ttl=43200)
 def scrape_concept_stocks():
     scraped_lists = {}
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-    }
-    
-    # 這裡示範去抓取公開且防護較低的台股資訊網 (例如 Goodinfo 或 Yahoo 概念股的簡易版邏輯)
-    # 注意：多數財經網站前端由 React 渲染，我們會嘗試抓取標籤或退回備用清單
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         url = "https://tw.stock.yahoo.com/class/"
         res = requests.get(url, headers=headers, timeout=8)
-        
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
-            # 實際爬蟲邏輯會依照網站 DOM 結構變化，這裡做概念性示範提取
             pass 
-            
-    except Exception as e:
-        pass # 爬蟲失敗時靜默處理，直接使用下方備用清單
+    except: pass
 
-    # 優雅降級：如果財經網站改版或阻擋爬蟲，自動啟用備用罐頭清單
     if not scraped_lists:
         scraped_lists = {
             "🌐 網摘：AI 伺服器概念": "2382, 3231, 2376, 6669, 2356",
@@ -170,10 +190,9 @@ def scrape_concept_stocks():
             "🌐 網摘：重電綠能大軍": "1503, 1513, 1514, 1519, 6806",
             "🌐 網摘：高股息 ETF 成分股": "2603, 3034, 2303, 2891, 2454"
         }
-        
     return scraped_lists
 
-# --- 3. 股票清單管理 (SaaS 升級版) ---
+# --- 3. 股票清單管理 ---
 if 'cookie_manager' not in st.session_state:
     st.session_state['cookie_manager'] = stx.CookieManager()
 cookie_manager = st.session_state['cookie_manager']
@@ -189,12 +208,9 @@ def load_user_lists():
 def save_user_lists(lists):
     cookie_manager.set("user_stock_lists", json.dumps(lists), key="save_cookie")
 
-# 獲取動態 Top20、網路爬蟲概念股、使用者自訂
 dynamic_top20 = fetch_latest_top20()
 scraped_concepts = scrape_concept_stocks()
 user_custom_lists = load_user_lists()
-
-# 順序：動態雷達 -> 網摘概念股 -> 個人私房股
 all_lists = {**dynamic_top20, **scraped_concepts, **user_custom_lists}
 
 # --- 4. 全新手機版 UI ---
@@ -282,25 +298,34 @@ if run_btn:
         
         for idx, stock in enumerate(targets):
             completed = idx + 1
-            
             elapsed = time.time() - start_time_exec
-            avg_time_per_task = elapsed / completed if completed > 0 else 0
-            eta_seconds = int(avg_time_per_task * (total_tasks - completed))
+            avg = elapsed / completed if completed > 0 else 0
+            eta_seconds = int(avg * (total_tasks - completed))
             
             status_area.markdown(f"""
                 <div class="status-box">
                     <b>🔍 查詢條件：</b> {st.session_state.get('label', '自定義')} ({start_date.strftime('%m/%d')} ~ {end_date.strftime('%m/%d')})<br>
                     <hr>
-                    <b>⚡ 處理進度：</b> [{completed} / {total_tasks}] 正在解析 {stock}<br>
+                    <b>⚡ 處理進度：</b> [{completed} / {total_tasks}] 正在並行解析 {stock}<br>
                     <b>⏱️ 預估剩餘：</b> {eta_seconds} 秒
                 </div>
             """, unsafe_allow_html=True)
             
             stock_name = get_stock_name(stock)
             summary[stock]['name'] = stock_name
-            df = fetch_finmind_institutional(stock, start_date, end_date)
             
-            if df is not None and not df.empty:
+            # 分別抓取兩組資料
+            df_inst = fetch_finmind_institutional(stock, start_date, end_date)
+            df_sec = fetch_finmind_secondary(stock, start_date, end_date)
+            
+            if df_inst is not None and not df_inst.empty:
+                # 兩組合併
+                if df_sec is not None and not df_sec.empty:
+                    df = pd.merge(df_inst, df_sec, on=['date', 'id'], how='left')
+                else:
+                    df = df_inst.copy()
+                    for col in ['Volume', 'Margin_Bal', 'Short_Bal']: df[col] = 0
+                
                 results_list.append(df)
                 summary[stock]['f'] = df['f_net'].sum()
                 summary[stock]['it'] = df['it_net'].sum()
@@ -334,20 +359,20 @@ if st.session_state.get('has_run', False):
     info = st.session_state.analysis_info
     st.success(f"✅ 高效分析完成！共涵蓋 {info['days']} 個有效交易日")
     
-    metric_options = {
-        "三大法人總和": "total_net",
-        "外資": "f_net",
-        "投信": "it_net",
-        "自營商": "d_net"
-    }
+    # 建立主副圖的 Radio 切換器
+    st.subheader("⚙️ 圖表顯示設定")
+    c1, c2 = st.columns(2)
+    with c1:
+        metric_options = {"三大法人總和": "total_net", "外資": "f_net", "投信": "it_net", "自營商": "d_net"}
+        selected_label = st.radio("🔴 主圖：法人籌碼", list(metric_options.keys()))
+        y_column = metric_options[selected_label]
+        
+    with c2:
+        sec_metric_options = {"無 (僅顯示法人)": None, "📊 成交總量 (張)": "Volume", "💰 融資餘額 (張)": "Margin_Bal", "📉 融券餘額 (張)": "Short_Bal"}
+        selected_sec_label = st.radio("🟡 副圖：附加折線", list(sec_metric_options.keys()))
+        y_col_sec = sec_metric_options[selected_sec_label]
     
-    selected_label = st.radio(
-        "🔄 切換檢視數據", 
-        list(metric_options.keys()), 
-        horizontal=True,
-        label_visibility="collapsed"
-    )
-    y_column = metric_options[selected_label]
+    st.divider()
     
     full_df = st.session_state.full_df
     summary = st.session_state.summary
@@ -356,23 +381,49 @@ if st.session_state.get('has_run', False):
     for stock in targets:
         sub_df = full_df[full_df['id'] == stock].sort_values('date')
         if sub_df.empty: continue
-        fig = go.Figure()
         
+        # 啟用雙 Y 軸 (Secondary Y)
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
         y_data = sub_df[y_column] / 1000
         
+        # 繪製主圖：籌碼柱狀圖
         fig.add_trace(go.Bar(
             x=sub_df['date'],
             y=y_data,
             marker_color=['#ef5350' if x>=0 else '#66bb6a' for x in y_data],
-            name="張數",
+            name=selected_label,
             hovertemplate="日期: %{x}<br>張數: %{y:+.0f} 張<extra></extra>"
-        ))
+        ), secondary_y=False)
         
+        # 繪製副圖：附加指標折線圖 (如果使用者有選)
+        if y_col_sec and y_col_sec in sub_df.columns:
+            # 根據指標種類給予不同的折線顏色
+            sec_color = "#f1c40f" if "融資" in selected_sec_label else "#3498db" if "融券" in selected_sec_label else "#ecf0f1"
+            clean_sec_name = selected_sec_label.split(" ")[1] # 移除 Emoji 以維持圖例乾淨
+            
+            fig.add_trace(go.Scatter(
+                x=sub_df['date'],
+                y=sub_df[y_col_sec],
+                mode='lines+markers',
+                line=dict(color=sec_color, width=2.5),
+                marker=dict(size=6),
+                name=clean_sec_name,
+                hovertemplate="日期: %{x}<br>數值: %{y:,.0f} 張<extra></extra>"
+            ), secondary_y=True)
+        
+        # 綜合 Layout 設定
         fig.update_layout(
-            title=f"【{summary[stock]['name']}】{selected_label} (張)",
+            title=f"【{summary[stock]['name']}】籌碼與指標診斷",
             template="plotly_dark",
-            margin=dict(l=10, r=10, t=50, b=10), height=300, xaxis=dict(tickformat="%m/%d")
+            margin=dict(l=10, r=10, t=50, b=10), height=350, xaxis=dict(tickformat="%m/%d"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
+        
+        # 設定雙 Y 軸的樣式 (隱藏副圖網格線，保持畫面乾淨)
+        fig.update_yaxes(title_text="法人張數", secondary_y=False, showgrid=True, gridcolor='#333333')
+        if y_col_sec:
+            fig.update_yaxes(title_text=clean_sec_name, secondary_y=True, showgrid=False)
+            
         st.plotly_chart(fig, use_container_width=True)
 
     st.divider()
