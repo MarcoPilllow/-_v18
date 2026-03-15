@@ -6,10 +6,12 @@ import plotly.graph_objects as go
 import json
 import time
 import extra_streamlit_components as stx
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- 1. 環境基礎設定 ---
 st.set_page_config(page_title="三大法人籌碼變化", layout="centered")
 
+# CSS 修正：優化排版與「按鈕護眼配色」
 st.markdown("""
     <style>
     footer {visibility: hidden;}
@@ -61,7 +63,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 雲端緩存與 API (新增證交所 Top20 動態抓取) ---
+# --- 2. 雲端緩存與 API ---
 @st.cache_data(ttl=86400)
 def get_stock_name(stock_id):
     try:
@@ -104,33 +106,84 @@ def fetch_finmind_institutional(stock_id, start_date, end_date):
     except: return None
     return None
 
-@st.cache_data(ttl=3600) # 快取 1 小時，避免頻繁請求被鎖
-def fetch_dynamic_top20():
-    """動態抓取證交所今日成交量前 20 名，並自動進行簡單的產業分類"""
-    url = "https://www.twse.com.tw/exchangeReport/MI_INDEX20?response=json"
+# 【新增功能】多日動態爆量雷達 (快取 12 小時)
+@st.cache_data(ttl=43200)
+def fetch_dynamic_hot_stocks():
     dynamic_lists = {}
-    try:
-        resp = requests.get(url, timeout=10).json()
-        if resp.get("stat") == "OK" and "data" in resp:
-            # 抓取前 20 名股票代號
-            top20_ids = [str(row[1]) for row in resp["data"]]
-            dynamic_lists["🚀 動態：今日成交量 Top 20"] = ", ".join(top20_ids)
-            
-            # 利用代號字首進行簡單的產業粗分裝箱
-            tech_stocks = [s for s in top20_ids if s.startswith(('23', '24', '3', '5', '6', '8'))]
-            finance_stocks = [s for s in top20_ids if s.startswith('28')]
-            shipping_stocks = [s for s in top20_ids if s.startswith('26')]
-            
-            if tech_stocks: dynamic_lists["🚀 動態爆量：電子科技"] = ", ".join(tech_stocks)
-            if finance_stocks: dynamic_lists["🚀 動態爆量：金融保險"] = ", ".join(finance_stocks)
-            if shipping_stocks: dynamic_lists["🚀 動態爆量：航運業"] = ", ".join(shipping_stocks)
-            
-            return dynamic_lists
-    except:
-        return {}
-    return {}
+    today = datetime.date.today()
+    
+    # 準備過去 40 天的日期，扣除週末，取前 20 個「可能有交易」的日子
+    past_days = [today - datetime.timedelta(days=i) for i in range(40)]
+    possible_trading_days = [d for d in past_days if d.weekday() < 5][:20]
 
-# --- 3. 股票清單管理 (靜態 + 動態 + 儲存) ---
+    def fetch_single_day(d):
+        date_str = d.strftime("%Y%m%d")
+        url = f"https://www.twse.com.tw/exchangeReport/MI_INDEX20?response=json&date={date_str}"
+        try:
+            resp = requests.get(url, timeout=5).json()
+            if resp.get("stat") == "OK" and "data" in resp:
+                res = []
+                for row in resp["data"]:
+                    sid = str(row[1])
+                    vol = int(row[3].replace(',', '')) # 取得成交量
+                    res.append((sid, vol))
+                return d, res
+        except: pass
+        return d, []
+
+    results = {}
+    # 溫和地使用並行抓取，避免被證交所鎖 IP
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(fetch_single_day, d): d for d in possible_trading_days}
+        for future in as_completed(futures):
+            d, data = future.result()
+            if data: results[d] = data
+            time.sleep(0.1)
+
+    if not results: return {}
+
+    # 確保日期排序 (由新到舊)
+    sorted_dates = sorted(results.keys(), reverse=True)
+    latest_date = sorted_dates[0]
+    
+    # --- 輔助分類函數 ---
+    def categorize(prefix, ids, emoji):
+        tech = [s for s in ids if s.startswith(('23', '24', '3', '5', '6', '8'))]
+        fin = [s for s in ids if s.startswith('28')]
+        ship = [s for s in ids if s.startswith('26')]
+        if tech: dynamic_lists[f"{emoji} {prefix}：電子科技"] = ", ".join(tech)
+        if fin: dynamic_lists[f"{emoji} {prefix}：金融保險"] = ", ".join(fin)
+        if ship: dynamic_lists[f"{emoji} {prefix}：航運業"] = ", ".join(ship)
+
+    # 1. 🚀 近一日
+    latest_top20 = [sid for sid, vol in results[latest_date]]
+    dynamic_lists["🚀 近一日：全市場爆量 Top 20"] = ", ".join(latest_top20)
+    categorize("近一日爆量", latest_top20, "🚀")
+
+    # 2. 🚀🚀 近一週 (前 5 個有效交易日累計)
+    week_dates = sorted_dates[:5]
+    week_vols = {}
+    for d in week_dates:
+        for sid, vol in results[d]:
+            week_vols[sid] = week_vols.get(sid, 0) + vol
+    week_top20 = [sid for sid, vol in sorted(week_vols.items(), key=lambda x: x[1], reverse=True)[:20]]
+    if week_top20:
+        dynamic_lists["🚀🚀 近一週：累計爆量 Top 20"] = ", ".join(week_top20)
+        categorize("近一週爆量", week_top20, "🚀🚀")
+
+    # 3. 🚀🚀🚀 近一月 (最多前 20 個有效交易日累計)
+    month_vols = {}
+    for d in sorted_dates:
+        for sid, vol in results[d]:
+            month_vols[sid] = month_vols.get(sid, 0) + vol
+    month_top20 = [sid for sid, vol in sorted(month_vols.items(), key=lambda x: x[1], reverse=True)[:20]]
+    if month_top20:
+        dynamic_lists["🚀🚀🚀 近一月：累計爆量 Top 20"] = ", ".join(month_top20)
+        categorize("近一月爆量", month_top20, "🚀🚀🚀")
+
+    return dynamic_lists
+
+# --- 3. 股票清單管理 (SaaS 升級版) ---
 DEFAULT_CONCEPT_STOCKS = {
     "🔥 熱門：航運三雄": "2603, 2609, 2615",
     "🤖 趨勢：AI 伺服器": "2382, 3231, 2376, 6669",
@@ -148,25 +201,25 @@ def load_user_lists():
     if val and isinstance(val, str):
         try: return json.loads(val)
         except: return {}
-    elif val and isinstance(val, dict):
-        return val
+    elif val and isinstance(val, dict): return val
     return {}
 
 def save_user_lists(lists):
     cookie_manager.set("user_stock_lists", json.dumps(lists), key="save_cookie")
 
 # 獲取動態 Top20、使用者自訂、內建清單並合併
-dynamic_concept_stocks = fetch_dynamic_top20()
+dynamic_stocks = fetch_dynamic_hot_stocks()
 user_custom_lists = load_user_lists()
-# 顯示順序：動態抓取雷達 -> 靜態黃金罐頭 -> 使用者私房清單
-all_lists = {**dynamic_concept_stocks, **DEFAULT_CONCEPT_STOCKS, **user_custom_lists}
+# 順序：動態雷達 -> 靜態罐頭 -> 個人私房股
+all_lists = {**dynamic_stocks, **DEFAULT_CONCEPT_STOCKS, **user_custom_lists}
 
 # --- 4. 全新手機版 UI ---
 st.title("📊 三大法人籌碼變化")
 
+# [區塊 1：查詢目標]
 st.subheader("1. 查詢目標")
 list_names = list(all_lists.keys())
-selected_list = st.selectbox("載入組合 (支援動態爆量、概念股與自訂)", ["自訂輸入..."] + list_names)
+selected_list = st.selectbox("載入組合 (支援動態雷達、概念股與自訂)", ["自訂輸入..."] + list_names)
 
 initial_stocks = "2603, 2609, 2615"
 if selected_list != "自訂輸入...":
@@ -193,11 +246,12 @@ with st.expander("💾 儲存 / 刪除專屬清單 (將存於您的瀏覽器)"):
                 st.success("🗑️ 已從您的瀏覽器刪除！")
                 time.sleep(0.5)
                 st.rerun()
-            elif selected_list in DEFAULT_CONCEPT_STOCKS or selected_list in dynamic_concept_stocks:
+            elif selected_list in DEFAULT_CONCEPT_STOCKS or selected_list in dynamic_stocks:
                 st.error("⚠️ 系統內建與動態抓取的清單無法刪除喔！")
             else:
                 st.warning("請先選擇要刪除的自訂清單。")
 
+# [區塊 2：查詢區間]
 st.subheader("2. 查詢區間")
 
 presets = [
@@ -225,6 +279,7 @@ for row in presets:
 start_date = st.date_input("開始日期", st.session_state.start_date)
 end_date = st.date_input("結束日期", datetime.date.today())
 
+# [區塊 3：執行按鈕]
 run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
 st.divider()
 
