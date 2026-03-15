@@ -20,34 +20,56 @@ st.markdown("""
     .status-box hr { margin: 8px 0; border: none; border-top: 1px solid #444; }
     button:focus { outline: none !important; box-shadow: none !important; }
     div[role="radiogroup"] { justify-content: center; margin-bottom: 1rem; }
+    
+    /* 強化 Primary 按鈕顏色 */
     button[kind="primary"] {
         background-color: #3b82f6 !important; border: none !important; color: white !important;
     }
-    button[kind="primary"]:hover { background-color: #2563eb !important; }
+    
+    /* 【手機版排版鎖定】強制 4x4 矩陣，且不影響日期輸入 */
     @media (max-width: 768px) {
-        [data-testid="stHorizontalBlock"] { flex-direction: row !important; display: flex !important; gap: 4px !important; }
-        .stButton button { padding: 4px 0px !important; font-size: 12px !important; }
+        /* 1. 針對「查詢區間」的 4 欄位進行強制並排 */
+        /* 我們精確定位包含 4 個 column 的容器 */
+        div[data-testid="stHorizontalBlock"]:has(div[data-testid="column"]:nth-of-type(4)) {
+            flex-direction: row !important;
+            display: flex !important;
+            gap: 4px !important;
+            margin-bottom: -10px !important; /* 壓縮行高 */
+        }
+        
+        /* 2. 強制讓這些 Column 平均分配寬度 */
+        div[data-testid="stHorizontalBlock"]:has(div[data-testid="column"]:nth-of-type(4)) div[data-testid="column"] {
+            flex: 1 1 0% !important;
+            min-width: 0 !important;
+            padding: 0 !important;
+        }
+
+        /* 3. 調整按鈕內文字大小與間距，防止溢出 */
+        .stButton button {
+            padding: 4px 0px !important;
+            font-size: 12px !important;
+        }
+
+        /* 4. 確保「開始/結束日期」與「執行分析」維持 100% 寬度上下排列 */
+        /* 因為這兩者不是 4 欄位結構，所以會自動回歸瀑布流 */
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 名稱對照大數據優化 (一次性下載，徹底解決名字不顯示問題) ---
+# --- 2. 名稱對照大數據優化 ---
 @st.cache_data(ttl=86400)
 def load_all_stock_names():
-    """從 FinMind 抓取全市場名稱清單，保證所有代號都能顯示中文"""
     try:
         url = "https://api.finmindtrade.com/api/v4/data"
         parameter = {"dataset": "TaiwanStockInfo"}
         resp = requests.get(url, params=parameter, timeout=15).json()
         if resp.get('status') == 200:
             df = pd.DataFrame(resp['data'])
-            # 建立 { '2330': '台積電' } 字典
             return dict(zip(df['stock_id'], df['stock_name']))
     except:
         pass
     return {}
 
-# 啟動時先載入全市場字典
 stock_dict = load_all_stock_names()
 
 def get_actual_name(sid):
@@ -114,6 +136,7 @@ presets = [
 if 'label' not in st.session_state:
     st.session_state.label, st.session_state.start_date = "2周", datetime.date.today() - datetime.timedelta(days=13)
 
+# 渲染 4x4 按鈕
 for row in presets:
     cols = st.columns(4)
     for i, (label, days) in enumerate(row):
@@ -122,6 +145,7 @@ for row in presets:
             st.session_state.label = label
             st.rerun()
 
+# 日期輸入（維持上下排列）
 start_date = st.date_input("開始日期", st.session_state.start_date)
 end_date = st.date_input("結束日期", datetime.date.today())
 run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
@@ -139,8 +163,6 @@ if run_btn:
             completed = idx + 1
             avg = (time.time() - start_time_exec) / completed
             eta = int(avg * (len(targets) - completed))
-            
-            # 使用我們穩定的名稱對照表
             sname = get_actual_name(sid)
             
             status_area.markdown(f"""
