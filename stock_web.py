@@ -10,7 +10,6 @@ import extra_streamlit_components as stx
 # --- 1. 環境基礎設定 ---
 st.set_page_config(page_title="三大法人籌碼變化", layout="centered")
 
-# CSS 修正：優化排版與「按鈕護眼配色」
 st.markdown("""
     <style>
     footer {visibility: hidden;}
@@ -62,7 +61,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 雲端緩存與 FinMind API ---
+# --- 2. 雲端緩存與 API (新增證交所 Top20 動態抓取) ---
 @st.cache_data(ttl=86400)
 def get_stock_name(stock_id):
     try:
@@ -105,7 +104,33 @@ def fetch_finmind_institutional(stock_id, start_date, end_date):
     except: return None
     return None
 
-# --- 3. 股票清單管理 (SaaS 升級版：Cookie 隔離 + 內建概念股) ---
+@st.cache_data(ttl=3600) # 快取 1 小時，避免頻繁請求被鎖
+def fetch_dynamic_top20():
+    """動態抓取證交所今日成交量前 20 名，並自動進行簡單的產業分類"""
+    url = "https://www.twse.com.tw/exchangeReport/MI_INDEX20?response=json"
+    dynamic_lists = {}
+    try:
+        resp = requests.get(url, timeout=10).json()
+        if resp.get("stat") == "OK" and "data" in resp:
+            # 抓取前 20 名股票代號
+            top20_ids = [str(row[1]) for row in resp["data"]]
+            dynamic_lists["🚀 動態：今日成交量 Top 20"] = ", ".join(top20_ids)
+            
+            # 利用代號字首進行簡單的產業粗分裝箱
+            tech_stocks = [s for s in top20_ids if s.startswith(('23', '24', '3', '5', '6', '8'))]
+            finance_stocks = [s for s in top20_ids if s.startswith('28')]
+            shipping_stocks = [s for s in top20_ids if s.startswith('26')]
+            
+            if tech_stocks: dynamic_lists["🚀 動態爆量：電子科技"] = ", ".join(tech_stocks)
+            if finance_stocks: dynamic_lists["🚀 動態爆量：金融保險"] = ", ".join(finance_stocks)
+            if shipping_stocks: dynamic_lists["🚀 動態爆量：航運業"] = ", ".join(shipping_stocks)
+            
+            return dynamic_lists
+    except:
+        return {}
+    return {}
+
+# --- 3. 股票清單管理 (靜態 + 動態 + 儲存) ---
 DEFAULT_CONCEPT_STOCKS = {
     "🔥 熱門：航運三雄": "2603, 2609, 2615",
     "🤖 趨勢：AI 伺服器": "2382, 3231, 2376, 6669",
@@ -114,13 +139,11 @@ DEFAULT_CONCEPT_STOCKS = {
     "💰 存股：金融金控": "2881, 2882, 2886, 2891"
 }
 
-# 【修復重點】改用 session_state 取代 @st.cache_resource，避免 Widget 快取衝突
 if 'cookie_manager' not in st.session_state:
     st.session_state['cookie_manager'] = stx.CookieManager()
 cookie_manager = st.session_state['cookie_manager']
 
 def load_user_lists():
-    """從使用者的瀏覽器 Cookie 讀取專屬清單"""
     val = cookie_manager.get(cookie="user_stock_lists")
     if val and isinstance(val, str):
         try: return json.loads(val)
@@ -130,20 +153,20 @@ def load_user_lists():
     return {}
 
 def save_user_lists(lists):
-    """將自訂清單寫入使用者的瀏覽器 Cookie"""
     cookie_manager.set("user_stock_lists", json.dumps(lists), key="save_cookie")
 
-# 獲取目前使用者的自訂清單，並與內建清單合併
+# 獲取動態 Top20、使用者自訂、內建清單並合併
+dynamic_concept_stocks = fetch_dynamic_top20()
 user_custom_lists = load_user_lists()
-all_lists = {**DEFAULT_CONCEPT_STOCKS, **user_custom_lists}
+# 顯示順序：動態抓取雷達 -> 靜態黃金罐頭 -> 使用者私房清單
+all_lists = {**dynamic_concept_stocks, **DEFAULT_CONCEPT_STOCKS, **user_custom_lists}
 
 # --- 4. 全新手機版 UI ---
 st.title("📊 三大法人籌碼變化")
 
-# [區塊 1：查詢目標]
 st.subheader("1. 查詢目標")
 list_names = list(all_lists.keys())
-selected_list = st.selectbox("載入組合 (支援內建概念股與您的自訂)", ["自訂輸入..."] + list_names)
+selected_list = st.selectbox("載入組合 (支援動態爆量、概念股與自訂)", ["自訂輸入..."] + list_names)
 
 initial_stocks = "2603, 2609, 2615"
 if selected_list != "自訂輸入...":
@@ -170,12 +193,11 @@ with st.expander("💾 儲存 / 刪除專屬清單 (將存於您的瀏覽器)"):
                 st.success("🗑️ 已從您的瀏覽器刪除！")
                 time.sleep(0.5)
                 st.rerun()
-            elif selected_list in DEFAULT_CONCEPT_STOCKS:
-                st.error("⚠️ 內建概念股無法刪除喔！")
+            elif selected_list in DEFAULT_CONCEPT_STOCKS or selected_list in dynamic_concept_stocks:
+                st.error("⚠️ 系統內建與動態抓取的清單無法刪除喔！")
             else:
                 st.warning("請先選擇要刪除的自訂清單。")
 
-# [區塊 2：查詢區間]
 st.subheader("2. 查詢區間")
 
 presets = [
@@ -203,7 +225,6 @@ for row in presets:
 start_date = st.date_input("開始日期", st.session_state.start_date)
 end_date = st.date_input("結束日期", datetime.date.today())
 
-# [區塊 3：執行按鈕]
 run_btn = st.button("🚀 執行籌碼分析", type="primary", use_container_width=True)
 st.divider()
 
