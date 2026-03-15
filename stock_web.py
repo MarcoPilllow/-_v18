@@ -7,7 +7,7 @@ import json
 import os
 
 # --- 1. 環境基礎設定 ---
-st.set_page_config(page_title="三大法人手機診斷版 v19.0", layout="centered")
+st.set_page_config(page_title="三大法人手機診斷版 v19.1", layout="centered")
 
 st.markdown("""
     <style>
@@ -42,7 +42,7 @@ def get_stock_name(stock_id):
 
 @st.cache_data(ttl=3600)
 def fetch_finmind_institutional(stock_id, start_date, end_date):
-    """【核心升級】使用 FinMind API，單次拉取區間內該股票的所有法人買賣超"""
+    """使用 FinMind API，單次拉取區間內該股票的所有法人買賣超"""
     url = "https://api.finmindtrade.com/api/v4/data"
     parameter = {
         "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
@@ -60,16 +60,17 @@ def fetch_finmind_institutional(stock_id, start_date, end_date):
             # 計算淨買賣超 (FinMind 的數據單位為「股」)
             df['net'] = df['buy'] - df['sell']
             
-            # 將 FinMind 的細部法人名稱歸類為三大法人
+            # 【關鍵修復】FinMind 回傳的是英文名稱 (Foreign_Investor, Investment_Trust, Dealer)
             def classify_investor(name):
-                if '外資' in name: return 'f_net'
-                elif '投信' in name: return 'it_net'
-                elif '自營商' in name: return 'd_net'
+                n = str(name).lower()
+                if 'foreign' in n or '外資' in n: return 'f_net'
+                elif 'trust' in n or '投信' in n: return 'it_net'
+                elif 'dealer' in n or '自營' in n: return 'd_net'
                 return 'other'
                 
             df['type'] = df['name'].apply(classify_investor)
             
-            # 以日期分組，將不同法人的 net 加總 (例如自營商有自行買賣和避險)
+            # 以日期分組，將不同法人的 net 加總
             pivot_df = df.pivot_table(index='date', columns='type', values='net', aggfunc='sum').fillna(0)
             
             # 確保欄位都存在，避免報錯
@@ -169,7 +170,6 @@ if run_btn:
         summary = {t: {'name': t, 'f': 0, 'it': 0, 'd': 0, 'tot': 0} for t in targets}
         results_list = []
         
-        # 改為針對「股票」發送請求，大幅降低 Request 次數
         for idx, stock in enumerate(targets):
             status_area.markdown(f"""
                 <div class="status-box">
@@ -178,7 +178,6 @@ if run_btn:
                 </div>
             """, unsafe_allow_html=True)
             
-            # 取得名稱並抓取資料
             stock_name = get_stock_name(stock)
             summary[stock]['name'] = stock_name
             df = fetch_finmind_institutional(stock, start_date, end_date)
@@ -197,7 +196,6 @@ if run_btn:
 
         if results_list:
             full_df = pd.concat(results_list)
-            # 透過實際抓到的資料計算真實的「有效交易日」
             actual_trading_days = full_df['date'].nunique()
             
             st.session_state.full_df = full_df
@@ -242,7 +240,7 @@ if st.session_state.get('has_run', False):
         if sub_df.empty: continue
         fig = go.Figure()
         
-        # 轉換回「張」數
+        # 轉換回「張」數 (FinMind預設是股)
         y_data = sub_df[y_column] / 1000
         
         fig.add_trace(go.Bar(
